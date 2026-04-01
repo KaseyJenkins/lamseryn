@@ -1,0 +1,50 @@
+// Format: CTR(level, field_name)
+// Level token is OPS or DEV
+
+// Ops (prod-worthy)
+CTR(OPS, cnt_accept_ok)
+CTR(OPS, cnt_accept_err)
+CTR(OPS, cnt_send_err)
+CTR(OPS, cnt_close_err)
+CTR(OPS, cnt_408)
+CTR(OPS, cnt_accept_emfile)
+CTR(OPS, cnt_accept_enfile)
+CTR(OPS, cnt_accept_other)
+
+// Dev/R&D (debug/observability)
+CTR(DEV, cnt_431)
+CTR(DEV, cnt_400_llhttp)
+CTR(DEV, cnt_headers_complete)
+CTR(DEV, cnt_eof_idle)
+CTR(DEV, cnt_eof_midreq)
+CTR(DEV, cnt_write_timeout_abortive_close)
+CTR(DEV, cnt_accept_eagain)
+
+CTR(DEV, buf_in_use)
+CTR(DEV, buf_in_use_max)
+CTR(DEV, cnt_buf_noselect)
+CTR(DEV, cnt_buf_badid)
+
+CTR(DEV, cnt_sqe_starvation_close)
+CTR(DEV, cnt_read_ptr_posts)
+CTR(DEV, cnt_shutdown_drain_ka_suppressed)
+
+
+// BATched flow
+CTR(DEV, cnt_sqes_posted) // staged SQEs (mark_post)
+CTR(DEV, cnt_sqes_flushed) // SQEs flushed per batched submit
+CTR(DEV, cnt_submit_calls) // batched io_uring_submit calls
+CTR(DEV, cnt_submit_urgent) // urgent batched submits
+// DIrect submits
+CTR(DEV, cnt_submit_direct) // direct (non-batched) submits
+CTR(DEV, cnt_sqes_direct_posted) // SQEs posted via direct paths
+CTR(DEV, cnt_submit_inline) // submits executed inside get_sqe_retry_once
+
+// timing wheel
+CTR(DEV, cnt_tw_ticks) // number of ticks processed
+CTR(DEV, cnt_tw_processed) // total conns walked in ticks
+CTR(DEV, cnt_tw_expired) // conns that were expired at tick time
+CTR(DEV, cnt_tw_reinserted) // conns not yet expired and reinserted
+CTR(DEV, cnt_tw_bucket_max) // max processed in a single tick
+CTR(DEV, cnt_tw_tick_us_total) // total time spent in tw_process_tick (us)
+CTR(DEV, cnt_tw_tick_us_max) // worst single tw_process_tick (us)

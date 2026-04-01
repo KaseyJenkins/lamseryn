@@ -1,0 +1,55 @@
+# tools/gates/profiles.yaml
+#
+# Minimal YAML subset supported by tools/gates/profile.py:
+# - top-level mapping of profile-name -> key/value mapping
+# - 2-space indents
+# - integer values (ms/bps/bytes)
+#
+# Notes:
+# - Many knobs are compile-time -D defines today (macros in include/macros.h).
+# - Some knobs are runtime env vars (e.g. QUEUE_DEPTH, DOCROOT, LOG_LEVEL).
+# - Some knobs in the ship-room checklist are not implemented yet; keep them
+#   here anyway so the checklist stays authoritative.
+
+ci-fast:
+  INITIAL_IDLE_TIMEOUT_MS: 1000
+  HEADER_TIMEOUT_MS: 5000
+  BODY_TIMEOUT_MS: 5000
+  IDLE_CLOSE_MS: 10000
+  ACCEPT_BACKOFF_MS: 200
+
+  # Not yet implemented (tracked as gates only)
+  BODY_MIN_RATE_BPS: 2048
+  KA_IDLE_TIMEOUT_MS: 10000
+  WRITE_TIMEOUT_MS: 1500
+  MAX_CONNS_PER_WORKER: 2000
+  MAX_PER_CONN_BYTES: 131072
+  ACCEPT_RAMP_RATE_CONN_S: 200
+
+staging:
+  INITIAL_IDLE_TIMEOUT_MS: 1500
+  HEADER_TIMEOUT_MS: 7000
+  BODY_TIMEOUT_MS: 7000
+  IDLE_CLOSE_MS: 20000
+  ACCEPT_BACKOFF_MS: 200
+
+  BODY_MIN_RATE_BPS: 1024
+  KA_IDLE_TIMEOUT_MS: 20000
+  WRITE_TIMEOUT_MS: 7000
+  MAX_CONNS_PER_WORKER: 8000
+  MAX_PER_CONN_BYTES: 196608
+  ACCEPT_RAMP_RATE_CONN_S: 500
+
+prod:
+  INITIAL_IDLE_TIMEOUT_MS: 2000
+  HEADER_TIMEOUT_MS: 10000
+  BODY_TIMEOUT_MS: 10000
+  IDLE_CLOSE_MS: 30000
+  ACCEPT_BACKOFF_MS: 200
+
+  BODY_MIN_RATE_BPS: 512
+  KA_IDLE_TIMEOUT_MS: 30000
+  WRITE_TIMEOUT_MS: 10000
+  MAX_CONNS_PER_WORKER: 20000
+  MAX_PER_CONN_BYTES: 262144
+  ACCEPT_RAMP_RATE_CONN_S: 1000

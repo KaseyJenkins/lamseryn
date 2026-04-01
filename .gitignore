@@ -1,0 +1,35 @@
+# Build artifacts
+/build/
+/build/**
+
+# Test build artifacts
+/tests/build/
+/tests/build/**
+
+# Third-party sources
+# Keep vendored build-critical deps in git; keep OpenSSL optional/local-only.
+/third_party/*
+!/third_party/inih/
+!/third_party/inih/**
+!/third_party/llhttp/
+!/third_party/llhttp/**
+/third_party/liburing/
+/third_party/liburing/**
+/third_party/openssl/
+/third_party/openssl/**
+
+# Common extras (optional, useful in C projects)
+*.o
+*.a
+*.so
+*.log
+*.swp
+.DS_Store
+
+# Python artifacts (gates tooling)
+__pycache__/
+*.pyc
+
+# TLS test credentials (generated locally, never committed)
+tests/integration/certs/*.key
+tests/integration/certs/*.crt
