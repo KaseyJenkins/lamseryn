@@ -7,6 +7,7 @@ PORT=${3:-18080}
 THREADS=${4:-1}
 
 HOST=${HOST:-127.0.0.1}
+HOST_DEFAULT="$HOST"
 TIMEOUT_MS=${TIMEOUT_MS:-5000}
 PIPELINE_N=${PIPELINE_N:-50}
 FRAG_DELAY_MS=${FRAG_DELAY_MS:-10}
@@ -16,6 +17,7 @@ ENABLE_SHUTDOWN_BASELINE_ITESTS=${ENABLE_SHUTDOWN_BASELINE_ITESTS:-0}
 ENABLE_SHUTDOWN_ITESTS=${ENABLE_SHUTDOWN_ITESTS:-1}
 ENABLE_ACCESS_LOG_ITESTS=${ENABLE_ACCESS_LOG_ITESTS:-1}
 ENABLE_ACCESS_LOG_SATURATION_ITESTS=${ENABLE_ACCESS_LOG_SATURATION_ITESTS:-0}
+ENABLE_ACCESS_LOG_IPV6_ITESTS=${ENABLE_ACCESS_LOG_IPV6_ITESTS:-1}
 DOCROOT_SRC=${DOCROOT:-tests/integration/wwwroot}
 ITEST_INI=$(mktemp -t lamseryn_itest.XXXXXX.ini)
 
@@ -26,6 +28,14 @@ DOCROOT="$DOCROOT_TMP"
 ACCESS_LOG_FILE=""
 ACCESS_LOG_ROTATED_FILE=""
 ACCESS_LOG_FAIL_DIR=""
+ACCESS_LOG_TEMP_FILES=()
+
+register_access_log_temp_file() {
+  local p=${1:-}
+  if [[ -n "$p" ]]; then
+    ACCESS_LOG_TEMP_FILES+=("$p")
+  fi
+}
 
 cleanup() {
   stop_server
@@ -45,6 +55,11 @@ cleanup() {
     chmod 0755 "$ACCESS_LOG_FAIL_DIR" 2>/dev/null || true
     rm -rf "$ACCESS_LOG_FAIL_DIR" || true
   fi
+  for p in "${ACCESS_LOG_TEMP_FILES[@]:-}"; do
+    if [[ -n "$p" ]] && [[ -f "$p" ]]; then
+      rm -f "$p" || true
+    fi
+  done
 }
 
 if [[ ! -x "$SERVER_BIN" ]]; then
@@ -182,6 +197,24 @@ wait_for_listen() {
   return 1
 }
 
+ipv6_loopback_available() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 1
+  fi
+
+  python3 - <<'PY' >/dev/null 2>&1
+import socket
+
+s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+try:
+    s.bind(("::1", 0))
+except OSError:
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+}
+
 run_client() {
   local mode=$1
   shift
@@ -266,7 +299,9 @@ run_client path-dot-segments-normalize --nodelay
 if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
   stop_server
   ACCESS_LOG_FILE=$(mktemp -t lamseryn_access_itest.XXXXXX.log)
+  register_access_log_temp_file "$ACCESS_LOG_FILE"
   ACCESS_LOG_ROTATED_FILE="${ACCESS_LOG_FILE}.1"
+  register_access_log_temp_file "$ACCESS_LOG_ROTATED_FILE"
   start_server "" "true" "$ACCESS_LOG_FILE"
 
   echo "[itest] running access-log emission checks" >&2
@@ -314,6 +349,19 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
     echo "[itest] expected status=405 in access log" >&2
     cat "$ACCESS_LOG_FILE" >&2 || true
     exit 1
+  fi
+  if ! grep -Eq '(^|[[:space:]])ip=' "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected ip= field in access log" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
+
+  if [[ "$HOST" == "127.0.0.1" ]]; then
+    if ! grep -q "ip=127.0.0.1" "$ACCESS_LOG_FILE"; then
+      echo "[itest] expected ip=127.0.0.1 in access log for localhost IPv4 tests" >&2
+      cat "$ACCESS_LOG_FILE" >&2 || true
+      exit 1
+    fi
   fi
 
   echo "[itest] running access-log reopen on SIGHUP checks" >&2
@@ -368,6 +416,12 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
     exit 1
   fi
 
+  if [[ "$HOST" == "127.0.0.1" ]] && ! grep -q "ip=127.0.0.1" "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected post-reopen access log lines to include ip=127.0.0.1" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
+
   if [[ "$old_after_post" != "$old_before_post" ]]; then
     echo "[itest] rotated access log changed after reopen: before=$old_before_post after=$old_after_post" >&2
     echo "[itest] rotated access log contents:" >&2
@@ -418,6 +472,48 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
     echo "[itest] expected reopen failure log line on SIGHUP" >&2
     tail -n 200 "$log_file" >&2 || true
     exit 1
+  fi
+
+  if [[ "$ENABLE_ACCESS_LOG_IPV6_ITESTS" == "1" ]]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "[itest] IPv6 access-log checks are enabled but python3 is unavailable" >&2
+      exit 1
+    fi
+    if ! ipv6_loopback_available; then
+      echo "[itest] IPv6 access-log checks are enabled but IPv6 loopback (::1) is unavailable" >&2
+      exit 1
+    fi
+
+    stop_server
+    HOST="::1"
+    ACCESS_LOG_FILE=$(mktemp -t lamseryn_access_itest_v6.XXXXXX.log)
+    register_access_log_temp_file "$ACCESS_LOG_FILE"
+    ACCESS_LOG_ROTATED_FILE="${ACCESS_LOG_FILE}.1"
+    register_access_log_temp_file "$ACCESS_LOG_ROTATED_FILE"
+    start_server "" "true" "$ACCESS_LOG_FILE"
+
+    echo "[itest] running access-log IPv6 loopback checks" >&2
+    run_client static-index --nodelay
+    run_client static-head-index --nodelay
+    run_client method-not-allowed --nodelay
+    for _ in $(seq 1 70); do
+      run_client static-index --nodelay
+    done
+    sleep 0.1
+
+    if ! grep -Eq '(^|[[:space:]])ip=::1([[:space:]]|$)' "$ACCESS_LOG_FILE"; then
+      echo "[itest] expected ip=::1 in access log for localhost IPv6 tests" >&2
+      cat "$ACCESS_LOG_FILE" >&2 || true
+      exit 1
+    fi
+
+    stop_server
+    HOST="$HOST_DEFAULT"
+    ACCESS_LOG_FILE=$(mktemp -t lamseryn_access_itest.XXXXXX.log)
+    register_access_log_temp_file "$ACCESS_LOG_FILE"
+    ACCESS_LOG_ROTATED_FILE="${ACCESS_LOG_FILE}.1"
+    register_access_log_temp_file "$ACCESS_LOG_ROTATED_FILE"
+    start_server "" "true" "$ACCESS_LOG_FILE"
   fi
 
 fi

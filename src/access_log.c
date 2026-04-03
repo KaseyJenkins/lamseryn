@@ -54,6 +54,7 @@ struct access_log_qentry {
   char method[8];
   char target[ACCESS_LOG_TARGET_MAX_DEFAULT];
   unsigned target_len;
+  char remote_ip[INET6_ADDRSTRLEN];
   unsigned status;
   uint64_t bytes;
   unsigned dur_ms;
@@ -218,6 +219,7 @@ static size_t access_log_format_qentry_line(char *out,
   ev.method = (item->method[0] != '\0') ? item->method : "-";
   ev.target = item->target;
   ev.target_len = item->target_len;
+  ev.remote_ip = (item->remote_ip[0] != '\0') ? item->remote_ip : NULL;
   ev.status = item->status;
   ev.bytes = item->bytes;
   ev.dur_ms = item->dur_ms;
@@ -673,13 +675,15 @@ size_t access_log_format_text_line(char *out,
 
   const char *method = (ev->method && ev->method[0]) ? ev->method : "-";
   const char *target = (target_n > 0) ? target_buf : "-";
+  const char *ip = (ev->remote_ip && ev->remote_ip[0]) ? ev->remote_ip : "-";
 
   int n = snprintf(out,
                    out_cap,
-                   "ts_ms=%" PRIu64 " worker=%u method=%s target=%s status=%u bytes=%" PRIu64
+                   "ts_ms=%" PRIu64 " worker=%u ip=%s method=%s target=%s status=%u bytes=%" PRIu64
                    " dur_ms=%u ka=%d tls=%d trunc=%d\n",
                    ev->ts_ms,
                    ev->worker,
+                   ip,
                    method,
                    target,
                    ev->status,
@@ -1129,6 +1133,10 @@ void access_log_emit_from_conn(struct worker_ctx *w, struct conn *c) {
   qev.dur_ms = (dur_ms > 0xffffffffull) ? 0xffffffffu : (unsigned)dur_ms;
   qev.keepalive = c->tx.keepalive ? 1 : 0;
   qev.tls = c->tls_enabled ? 1 : 0;
+
+  if (c->remote_ip[0] != '\0') {
+    memcpy(qev.remote_ip, c->remote_ip, sizeof(qev.remote_ip));
+  }
 
   if (!method || !method[0]) {
     method = "-";

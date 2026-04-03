@@ -16,6 +16,7 @@ struct access_log_event {
   const char *method;
   const char *target;
   size_t target_len;
+  const char *remote_ip;
   unsigned status;
   uint64_t bytes;
   unsigned dur_ms;

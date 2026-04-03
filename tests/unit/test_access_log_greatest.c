@@ -45,6 +45,7 @@ TEST t_format_text_line_has_expected_fields(void) {
   ev.method = "GET";
   ev.target = "/index.html?x=1";
   ev.target_len = strlen(ev.target);
+  ev.remote_ip = "192.168.1.10";
   ev.status = 200u;
   ev.bytes = 1234ull;
   ev.dur_ms = 3u;
@@ -56,6 +57,7 @@ TEST t_format_text_line_has_expected_fields(void) {
   ASSERT(n > 0);
   ASSERT(strstr(line, "ts_ms=1710956000123") != NULL);
   ASSERT(strstr(line, "worker=2") != NULL);
+  ASSERT(strstr(line, "ip=192.168.1.10") != NULL);
   ASSERT(strstr(line, "method=GET") != NULL);
   ASSERT(strstr(line, "target=/index.html?x=1") != NULL);
   ASSERT(strstr(line, "status=200") != NULL);
@@ -65,6 +67,56 @@ TEST t_format_text_line_has_expected_fields(void) {
   ASSERT(strstr(line, "tls=0") != NULL);
   ASSERT(strstr(line, "trunc=0") != NULL);
   ASSERT(line[n - 1] == '\n');
+
+  PASS();
+}
+
+TEST t_format_text_line_ipv6(void) {
+  char line[1024];
+  struct access_log_event ev;
+  memset(&ev, 0, sizeof(ev));
+
+  ev.ts_ms = 1u;
+  ev.worker = 0u;
+  ev.method = "POST";
+  ev.target = "/api";
+  ev.target_len = 4;
+  ev.remote_ip = "::1";
+  ev.status = 200u;
+  ev.bytes = 0u;
+  ev.dur_ms = 1u;
+  ev.keepalive = 1;
+  ev.tls = 0;
+
+  size_t n = access_log_format_text_line(line, sizeof(line), &ev, 256u);
+
+  ASSERT(n > 0);
+  ASSERT(strstr(line, "ip=::1") != NULL);
+
+  PASS();
+}
+
+TEST t_format_text_line_missing_ip(void) {
+  char line[1024];
+  struct access_log_event ev;
+  memset(&ev, 0, sizeof(ev));
+
+  ev.ts_ms = 1u;
+  ev.worker = 0u;
+  ev.method = "GET";
+  ev.target = "/";
+  ev.target_len = 1;
+  ev.remote_ip = NULL;
+  ev.status = 200u;
+  ev.bytes = 0u;
+  ev.dur_ms = 0u;
+  ev.keepalive = 0;
+  ev.tls = 0;
+
+  size_t n = access_log_format_text_line(line, sizeof(line), &ev, 256u);
+
+  ASSERT(n > 0);
+  ASSERT(strstr(line, "ip=-") != NULL);
 
   PASS();
 }
@@ -98,6 +150,8 @@ SUITE(access_log_greatest) {
   RUN_TEST(t_cfg_defaults_without_present_bits);
   RUN_TEST(t_sanitize_target_replaces_unsafe_and_marks_truncation);
   RUN_TEST(t_format_text_line_has_expected_fields);
+  RUN_TEST(t_format_text_line_ipv6);
+  RUN_TEST(t_format_text_line_missing_ip);
   RUN_TEST(t_format_text_line_truncates_target);
 }
 

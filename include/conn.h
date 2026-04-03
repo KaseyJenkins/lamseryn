@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <sys/types.h>
+#include <netinet/in.h>
 
 #include "macros.h"
 #include "types.h"
@@ -224,6 +225,10 @@ struct conn {
   struct conn *free_next;
 
   const struct vhost_t *vhost;
+
+  // Remote peer address captured at accept time.
+  char remote_ip[INET6_ADDRSTRLEN];
+  uint16_t remote_port;
 
   // TLS transport state.
   int tls_enabled;

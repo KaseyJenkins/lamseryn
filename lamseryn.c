@@ -660,6 +660,29 @@ static int conn_init(struct worker_ctx *w, int fd) {
   c->refcnt = 1;
   c->link.active_idx = -1;
 
+  // Capture remote peer address at accept time.
+  {
+    struct sockaddr_storage peer;
+    socklen_t peer_len = sizeof(peer);
+    if (getpeername(fd, (struct sockaddr *)&peer, &peer_len) == 0) {
+      if (peer.ss_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)&peer;
+        inet_ntop(AF_INET, &sin->sin_addr, c->remote_ip, sizeof(c->remote_ip));
+        c->remote_port = ntohs(sin->sin_port);
+      } else if (peer.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&peer;
+        if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
+          struct in_addr v4;
+          memcpy(&v4, &sin6->sin6_addr.s6_addr[12], sizeof(v4));
+          inet_ntop(AF_INET, &v4, c->remote_ip, sizeof(c->remote_ip));
+        } else {
+          inet_ntop(AF_INET6, &sin6->sin6_addr, c->remote_ip, sizeof(c->remote_ip));
+        }
+        c->remote_port = ntohs(sin6->sin6_port);
+      }
+    }
+  }
+
   c->tx.file_fd = -1;
   c->tx.file_off = 0;
   c->tx.file_rem = 0;
