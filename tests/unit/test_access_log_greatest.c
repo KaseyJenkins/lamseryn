@@ -46,6 +46,7 @@ TEST t_format_text_line_has_expected_fields(void) {
   ev.target = "/index.html?x=1";
   ev.target_len = strlen(ev.target);
   ev.remote_ip = "192.168.1.10";
+  ev.remote_port = 54321u;
   ev.status = 200u;
   ev.bytes = 1234ull;
   ev.dur_ms = 3u;
@@ -58,6 +59,7 @@ TEST t_format_text_line_has_expected_fields(void) {
   ASSERT(strstr(line, "ts_ms=1710956000123") != NULL);
   ASSERT(strstr(line, "worker=2") != NULL);
   ASSERT(strstr(line, "ip=192.168.1.10") != NULL);
+  ASSERT(strstr(line, "port=54321") != NULL);
   ASSERT(strstr(line, "method=GET") != NULL);
   ASSERT(strstr(line, "target=/index.html?x=1") != NULL);
   ASSERT(strstr(line, "status=200") != NULL);
@@ -82,6 +84,7 @@ TEST t_format_text_line_ipv6(void) {
   ev.target = "/api";
   ev.target_len = 4;
   ev.remote_ip = "::1";
+  ev.remote_port = 1234u;
   ev.status = 200u;
   ev.bytes = 0u;
   ev.dur_ms = 1u;
@@ -92,6 +95,7 @@ TEST t_format_text_line_ipv6(void) {
 
   ASSERT(n > 0);
   ASSERT(strstr(line, "ip=::1") != NULL);
+  ASSERT(strstr(line, "port=1234") != NULL);
 
   PASS();
 }
@@ -107,6 +111,7 @@ TEST t_format_text_line_missing_ip(void) {
   ev.target = "/";
   ev.target_len = 1;
   ev.remote_ip = NULL;
+  ev.remote_port = 0u;
   ev.status = 200u;
   ev.bytes = 0u;
   ev.dur_ms = 0u;
@@ -117,6 +122,7 @@ TEST t_format_text_line_missing_ip(void) {
 
   ASSERT(n > 0);
   ASSERT(strstr(line, "ip=-") != NULL);
+  ASSERT(strstr(line, "port=0") != NULL);
 
   PASS();
 }

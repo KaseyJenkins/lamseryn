@@ -355,10 +355,20 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
     cat "$ACCESS_LOG_FILE" >&2 || true
     exit 1
   fi
+  if ! grep -Eq '(^|[[:space:]])port=' "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected port= field in access log" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
 
   if [[ "$HOST" == "127.0.0.1" ]]; then
     if ! grep -q "ip=127.0.0.1" "$ACCESS_LOG_FILE"; then
       echo "[itest] expected ip=127.0.0.1 in access log for localhost IPv4 tests" >&2
+      cat "$ACCESS_LOG_FILE" >&2 || true
+      exit 1
+    fi
+    if ! grep -Eq '(^|[[:space:]])port=[1-9][0-9]*([[:space:]]|$)' "$ACCESS_LOG_FILE"; then
+      echo "[itest] expected non-zero port= in access log for localhost IPv4 tests" >&2
       cat "$ACCESS_LOG_FILE" >&2 || true
       exit 1
     fi
@@ -418,6 +428,11 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
 
   if [[ "$HOST" == "127.0.0.1" ]] && ! grep -q "ip=127.0.0.1" "$ACCESS_LOG_FILE"; then
     echo "[itest] expected post-reopen access log lines to include ip=127.0.0.1" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
+  if [[ "$HOST" == "127.0.0.1" ]] && ! grep -Eq '(^|[[:space:]])port=[1-9][0-9]*([[:space:]]|$)' "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected post-reopen access log lines to include non-zero port=" >&2
     cat "$ACCESS_LOG_FILE" >&2 || true
     exit 1
   fi
@@ -506,6 +521,11 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
       cat "$ACCESS_LOG_FILE" >&2 || true
       exit 1
     fi
+    if ! grep -Eq '(^|[[:space:]])port=[1-9][0-9]*([[:space:]]|$)' "$ACCESS_LOG_FILE"; then
+      echo "[itest] expected non-zero port= in access log for localhost IPv6 tests" >&2
+      cat "$ACCESS_LOG_FILE" >&2 || true
+      exit 1
+    fi
 
     stop_server
     HOST="$HOST_DEFAULT"
@@ -515,6 +535,44 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
     register_access_log_temp_file "$ACCESS_LOG_ROTATED_FILE"
     start_server "" "true" "$ACCESS_LOG_FILE"
   fi
+
+  echo "[itest] running access-log forced format-failure accounting checks" >&2
+  stop_server
+  old_threads="$THREADS"
+  THREADS=2
+  ACCESS_LOG_FILE=$(mktemp -t lamseryn_access_itest_forcefail.XXXXXX.log)
+  register_access_log_temp_file "$ACCESS_LOG_FILE"
+  ACCESS_LOG_ROTATED_FILE="${ACCESS_LOG_FILE}.1"
+  register_access_log_temp_file "$ACCESS_LOG_ROTATED_FILE"
+  export ACCESS_LOG_FORCE_ASYNC_WRITER=1
+  export ACCESS_LOG_TEST_FORCE_FORMAT_FAIL=1
+  start_server "" "true" "$ACCESS_LOG_FILE"
+  unset ACCESS_LOG_FORCE_ASYNC_WRITER
+  unset ACCESS_LOG_TEST_FORCE_FORMAT_FAIL
+  run_client static-index --nodelay
+  run_client static-head-index --nodelay
+  sleep 0.1
+  stop_server
+  THREADS="$old_threads"
+
+  counters_line=$(grep 'access log counters:' "$log_file" | tail -n 1 || true)
+  if [[ -z "$counters_line" ]]; then
+    echo "[itest] expected access log counters line after forced format-failure run" >&2
+    tail -n 200 "$log_file" >&2 || true
+    exit 1
+  fi
+  dropped_count=$(echo "$counters_line" | sed -E 's/.* dropped=([0-9]+).*/\1/' || true)
+  if [[ ! "$dropped_count" =~ ^[0-9]+$ ]] || [[ "$dropped_count" -le 0 ]]; then
+    echo "[itest] expected dropped>0 after forced format-failure run; got dropped=$dropped_count" >&2
+    echo "$counters_line" >&2
+    exit 1
+  fi
+
+  ACCESS_LOG_FILE=$(mktemp -t lamseryn_access_itest.XXXXXX.log)
+  register_access_log_temp_file "$ACCESS_LOG_FILE"
+  ACCESS_LOG_ROTATED_FILE="${ACCESS_LOG_FILE}.1"
+  register_access_log_temp_file "$ACCESS_LOG_ROTATED_FILE"
+  start_server "" "true" "$ACCESS_LOG_FILE"
 
 fi
 

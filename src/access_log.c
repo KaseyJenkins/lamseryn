@@ -18,6 +18,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifndef ACCESS_LOG_ENABLE_TEST_HOOKS
+#define ACCESS_LOG_ENABLE_TEST_HOOKS 0
+#endif
+
 static struct access_log_cfg g_access_log_cfg;
 static int g_access_log_fd = -1;
 static THREAD_LOCAL uint64_t g_access_log_sample_seq = 0;
@@ -36,6 +40,9 @@ static volatile uint64_t g_access_log_reopen_attempt = 0;
 static volatile uint64_t g_access_log_reopen_success = 0;
 static volatile uint64_t g_access_log_reopen_fail = 0;
 static int g_access_log_file_sink = 0;
+#if ACCESS_LOG_ENABLE_TEST_HOOKS
+static int g_access_log_test_force_format_fail = 0;
+#endif
 
 #define ACCESS_LOG_LINE_MAX 1024u
 #define ACCESS_LOG_TARGET_MAX_DEFAULT 256u
@@ -55,6 +62,7 @@ struct access_log_qentry {
   char target[ACCESS_LOG_TARGET_MAX_DEFAULT];
   unsigned target_len;
   char remote_ip[INET6_ADDRSTRLEN];
+  uint16_t remote_port;
   unsigned status;
   uint64_t bytes;
   unsigned dur_ms;
@@ -212,6 +220,12 @@ static size_t access_log_format_qentry_line(char *out,
     return 0;
   }
 
+#if ACCESS_LOG_ENABLE_TEST_HOOKS
+  if (g_access_log_test_force_format_fail) {
+    return 0;
+  }
+#endif
+
   struct access_log_event ev;
   memset(&ev, 0, sizeof(ev));
   ev.ts_ms = item->ts_ms;
@@ -220,6 +234,7 @@ static size_t access_log_format_qentry_line(char *out,
   ev.target = item->target;
   ev.target_len = item->target_len;
   ev.remote_ip = (item->remote_ip[0] != '\0') ? item->remote_ip : NULL;
+  ev.remote_port = (unsigned)item->remote_port;
   ev.status = item->status;
   ev.bytes = item->bytes;
   ev.dur_ms = item->dur_ms;
@@ -342,6 +357,11 @@ static int access_log_direct_append(unsigned shard_id, const struct access_log_q
   struct access_log_sw_slot *slot = &st->slots[st->head];
   size_t line_len = access_log_format_qentry_line(slot->line, sizeof(slot->line), ev);
   if (line_len == 0 || line_len > ACCESS_LOG_LINE_MAX) {
+    (void)__sync_add_and_fetch(&g_access_log_dropped, 1ull);
+    LOGW_RL(LOGC_CORE,
+            1000,
+            "access log format failed: dropping direct entry shard=%u",
+            shard_id);
     return -1;
   }
 
@@ -426,6 +446,11 @@ static void *access_log_writer_thread(void *arg) {
           char line_buf[ACCESS_LOG_LINE_MAX];
           size_t line_len = access_log_format_qentry_line(line_buf, sizeof(line_buf), item);
           if (line_len == 0 || line_len > ACCESS_LOG_LINE_MAX) {
+            (void)__sync_add_and_fetch(&g_access_log_dropped, 1ull);
+            LOGW_RL(LOGC_CORE,
+                    1000,
+                    "access log format failed: dropping queued entry shard=%u",
+                    i);
             batch_tail = (batch_tail + 1u) % q->cap;
             continue;
           }
@@ -439,7 +464,9 @@ static void *access_log_writer_thread(void *arg) {
         }
 
         if (batch_lines == 0) {
-          tail = (tail + 1u) % q->cap;
+          // All scanned entries were invalid and already accounted as dropped.
+          // Advance to batch_tail to avoid rescanning and overcounting.
+          tail = batch_tail;
           __atomic_store_n(&q->cons_tail, tail, __ATOMIC_RELEASE);
           head = __atomic_load_n(&q->prod_head, __ATOMIC_ACQUIRE);
           continue;
@@ -676,14 +703,16 @@ size_t access_log_format_text_line(char *out,
   const char *method = (ev->method && ev->method[0]) ? ev->method : "-";
   const char *target = (target_n > 0) ? target_buf : "-";
   const char *ip = (ev->remote_ip && ev->remote_ip[0]) ? ev->remote_ip : "-";
+  unsigned port = ev->remote_port;
 
   int n = snprintf(out,
                    out_cap,
-                   "ts_ms=%" PRIu64 " worker=%u ip=%s method=%s target=%s status=%u bytes=%" PRIu64
+                   "ts_ms=%" PRIu64 " worker=%u ip=%s port=%u method=%s target=%s status=%u bytes=%" PRIu64
                    " dur_ms=%u ka=%d tls=%d trunc=%d\n",
                    ev->ts_ms,
                    ev->worker,
                    ip,
+                   port,
                    method,
                    target,
                    ev->status,
@@ -828,6 +857,9 @@ int access_log_runtime_init(const struct globals_cfg *g) {
   g_access_log_reopen_attempt = 0;
   g_access_log_reopen_success = 0;
   g_access_log_reopen_fail = 0;
+#if ACCESS_LOG_ENABLE_TEST_HOOKS
+  g_access_log_test_force_format_fail = access_log_env_enabled("ACCESS_LOG_TEST_FORCE_FORMAT_FAIL");
+#endif
   access_log_queue_init_reset();
 
   if (!g_access_log_cfg.enabled) {
@@ -932,9 +964,9 @@ int access_log_runtime_init(const struct globals_cfg *g) {
     return 0;
   }
 
-      LOGI(LOGC_CORE,
-        "access log: async writer mode enabled workers=%u (forced)",
-        g_access_log_q.shard_count);
+  LOGI(LOGC_CORE,
+       "access log: async writer mode enabled workers=%u (forced)",
+       g_access_log_q.shard_count);
 
   g_access_log_q.shards = calloc(g_access_log_q.shard_count, sizeof(*g_access_log_q.shards));
   if (!g_access_log_q.shards) {
@@ -1133,6 +1165,7 @@ void access_log_emit_from_conn(struct worker_ctx *w, struct conn *c) {
   qev.dur_ms = (dur_ms > 0xffffffffull) ? 0xffffffffu : (unsigned)dur_ms;
   qev.keepalive = c->tx.keepalive ? 1 : 0;
   qev.tls = c->tls_enabled ? 1 : 0;
+  qev.remote_port = c->remote_port;
 
   if (c->remote_ip[0] != '\0') {
     memcpy(qev.remote_ip, c->remote_ip, sizeof(qev.remote_ip));
