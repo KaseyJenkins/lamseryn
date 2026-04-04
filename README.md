@@ -1,5 +1,7 @@
 # Lamseryn
 
+[![Phase1 Gate](https://github.com/KaseyJenkins/lamseryn/actions/workflows/phase1-gate.yml/badge.svg)](https://github.com/KaseyJenkins/lamseryn/actions/workflows/phase1-gate.yml)
+
 A lightweight, io_uring-first HTTP/1.1 server written in C for Linux.
 
 Most Linux servers still use `epoll` as their I/O backbone — Lamseryn takes a different path.
