@@ -307,6 +307,8 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
   echo "[itest] running access-log emission checks" >&2
   run_client static-index --nodelay
   run_client static-head-index --nodelay
+  run_client static-large-file --nodelay
+  run_client static-sendfile-threshold --nodelay
   run_client method-not-allowed --nodelay
 
   # Force deterministic flush behavior under batched direct logging.
@@ -372,6 +374,30 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
       cat "$ACCESS_LOG_FILE" >&2 || true
       exit 1
     fi
+  fi
+
+  # --- bytes= field validation ---
+  # Contract: bytes = Content-Length header value from the response (intent).
+  index_bytes=$(wc -c < "$DOCROOT/index.html" | tr -d '[:space:]')
+  if ! grep -q "status=200 bytes=${index_bytes} " "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=200 with bytes=$index_bytes (index.html size) in access log" >&2
+    grep 'status=200' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=405 bytes=0 " "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=405 with bytes=0 in access log" >&2
+    grep 'status=405' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
+  fi
+  if ! grep -q "target=/big.bin status=200 bytes=524288 " "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected /big.bin access log line with bytes=524288" >&2
+    grep 'target=/big.bin' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
+  fi
+  if ! grep -q "target=/big_threshold.bin status=200 bytes=262145 " "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected /big_threshold.bin access log line with bytes=262145" >&2
+    grep 'target=/big_threshold.bin' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
   fi
 
   echo "[itest] running access-log reopen on SIGHUP checks" >&2

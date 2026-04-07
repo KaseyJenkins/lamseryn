@@ -160,6 +160,7 @@ struct http1_state {
 struct tx_state_t {
   size_t write_len;
   size_t write_off;
+  size_t content_length_hint;
   const char *write_buf;
   void *dyn_buf;
   enum resp_kind resp_kind;

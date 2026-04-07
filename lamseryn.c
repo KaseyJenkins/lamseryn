@@ -782,6 +782,7 @@ static void conn_reset_request(struct worker_ctx *w, struct conn *c) {
   c->tx.write_buf = NULL;
   c->tx.write_len = 0;
   c->tx.write_off = 0;
+  c->tx.content_length_hint = 0;
   c->tx.resp_kind = RK_NONE;
   c->tx.keepalive = 0;
   c->tx.drain_after_headers = 0;

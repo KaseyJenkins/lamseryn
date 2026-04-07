@@ -23,6 +23,7 @@ void tx_reset(struct tx_state_t *tx) {
   tx->write_buf = NULL;
   tx->write_len = 0;
   tx->write_off = 0;
+  tx->content_length_hint = 0;
   tx->resp_kind = RK_NONE;
 
   tx->write_poll_armed = 0;
@@ -140,6 +141,7 @@ int tx_build_headers(struct tx_state_t *tx,
   }
 
   tx->dyn_buf = owned;
+  tx->content_length_hint = content_len;
   tx->keepalive = keepalive ? 1 : 0;
   tx->drain_after_headers = drain_after_headers ? 1 : 0;
 

@@ -3,6 +3,7 @@
 
 #include "include/access_log.h"
 
+#include <stdint.h>
 #include <string.h>
 
 TEST t_cfg_defaults_without_present_bits(void) {
@@ -152,6 +153,85 @@ TEST t_format_text_line_truncates_target(void) {
   PASS();
 }
 
+TEST t_format_text_line_error_bytes_zero(void) {
+  char line[512];
+  struct access_log_event ev;
+  memset(&ev, 0, sizeof(ev));
+
+  ev.ts_ms = 100u;
+  ev.worker = 1u;
+  ev.method = "POST";
+  ev.target = "/";
+  ev.target_len = 1;
+  ev.remote_ip = "10.0.0.1";
+  ev.remote_port = 9999u;
+  ev.status = 405u;
+  ev.bytes = 0u;
+  ev.dur_ms = 0u;
+  ev.keepalive = 0;
+  ev.tls = 0;
+
+  size_t n = access_log_format_text_line(line, sizeof(line), &ev, 256u);
+
+  ASSERT(n > 0);
+  ASSERT(strstr(line, "status=405") != NULL);
+  ASSERT(strstr(line, "bytes=0 ") != NULL);
+
+  PASS();
+}
+
+TEST t_format_text_line_large_bytes(void) {
+  char line[512];
+  struct access_log_event ev;
+  memset(&ev, 0, sizeof(ev));
+
+  ev.ts_ms = 200u;
+  ev.worker = 0u;
+  ev.method = "GET";
+  ev.target = "/big.bin";
+  ev.target_len = 8;
+  ev.remote_ip = "127.0.0.1";
+  ev.remote_port = 12345u;
+  ev.status = 200u;
+  ev.bytes = 524288ull;
+  ev.dur_ms = 50u;
+  ev.keepalive = 1;
+  ev.tls = 0;
+
+  size_t n = access_log_format_text_line(line, sizeof(line), &ev, 256u);
+
+  ASSERT(n > 0);
+  ASSERT(strstr(line, "bytes=524288") != NULL);
+
+  PASS();
+}
+
+TEST t_format_text_line_max_bytes(void) {
+  char line[512];
+  struct access_log_event ev;
+  memset(&ev, 0, sizeof(ev));
+
+  ev.ts_ms = 300u;
+  ev.worker = 3u;
+  ev.method = "GET";
+  ev.target = "/max.bin";
+  ev.target_len = 8;
+  ev.remote_ip = "127.0.0.1";
+  ev.remote_port = 23456u;
+  ev.status = 200u;
+  ev.bytes = UINT64_MAX;
+  ev.dur_ms = 7u;
+  ev.keepalive = 1;
+  ev.tls = 0;
+
+  size_t n = access_log_format_text_line(line, sizeof(line), &ev, 256u);
+
+  ASSERT(n > 0);
+  ASSERT(strstr(line, "bytes=18446744073709551615") != NULL);
+
+  PASS();
+}
+
 SUITE(access_log_greatest) {
   RUN_TEST(t_cfg_defaults_without_present_bits);
   RUN_TEST(t_sanitize_target_replaces_unsafe_and_marks_truncation);
@@ -159,6 +239,9 @@ SUITE(access_log_greatest) {
   RUN_TEST(t_format_text_line_ipv6);
   RUN_TEST(t_format_text_line_missing_ip);
   RUN_TEST(t_format_text_line_truncates_target);
+  RUN_TEST(t_format_text_line_error_bytes_zero);
+  RUN_TEST(t_format_text_line_large_bytes);
+  RUN_TEST(t_format_text_line_max_bytes);
 }
 
 GREATEST_MAIN_DEFS();

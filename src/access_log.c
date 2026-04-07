@@ -761,50 +761,64 @@ static unsigned access_log_status_from_kind(enum resp_kind kind) {
 }
 
 static uint64_t access_log_content_length_hint(const struct conn *c) {
-  if (!c || !c->tx.write_buf || c->tx.write_len == 0) {
+  if (!c) {
     return 0u;
   }
 
-  const char *buf = c->tx.write_buf;
-  size_t len = c->tx.write_len;
-  size_t pos = 0;
+  // Primary: parse the current response headers buffer when available.
+  // This handles buffered and error responses correctly, and avoids using a
+  // stale hint from a previous keep-alive request on the same connection.
+  if (c->tx.write_buf && c->tx.write_len > 0) {
+    const char *buf = c->tx.write_buf;
+    size_t len = c->tx.write_len;
+    size_t pos = 0;
 
-  while (pos + 1 < len) {
-    size_t line_start = pos;
     while (pos + 1 < len) {
-      if (buf[pos] == '\r' && buf[pos + 1] == '\n') {
+      size_t line_start = pos;
+      while (pos + 1 < len) {
+        if (buf[pos] == '\r' && buf[pos + 1] == '\n') {
+          break;
+        }
+        pos++;
+      }
+      if (pos + 1 >= len) {
         break;
       }
-      pos++;
-    }
-    if (pos + 1 >= len) {
-      break;
+
+      size_t line_len = pos - line_start;
+      if (line_len == 0) {
+        break;
+      }
+
+      if (line_len > 15 && strncasecmp(buf + line_start, "Content-Length:", 15) == 0) {
+        size_t i = line_start + 15;
+        while (i < line_start + line_len && (buf[i] == ' ' || buf[i] == '\t')) {
+          i++;
+        }
+        uint64_t v = 0;
+        int have_digit = 0;
+        while (i < line_start + line_len && buf[i] >= '0' && buf[i] <= '9') {
+          have_digit = 1;
+          v = (v * 10u) + (uint64_t)(buf[i] - '0');
+          i++;
+        }
+        if (have_digit) {
+          return v;
+        }
+        return 0u;
+      }
+
+      pos += 2;
     }
 
-    size_t line_len = pos - line_start;
-    if (line_len == 0) {
-      break;
-    }
+    return 0u;
+  }
 
-    if (line_len > 15 && strncasecmp(buf + line_start, "Content-Length:", 15) == 0) {
-      size_t i = line_start + 15;
-      while (i < line_start + line_len && (buf[i] == ' ' || buf[i] == '\t')) {
-        i++;
-      }
-      uint64_t v = 0;
-      int have_digit = 0;
-      while (i < line_start + line_len && buf[i] >= '0' && buf[i] <= '9') {
-        have_digit = 1;
-        v = (v * 10u) + (uint64_t)(buf[i] - '0');
-        i++;
-      }
-      if (have_digit) {
-        return v;
-      }
-      return 0u;
-    }
-
-    pos += 2;
+  // Fallback: use the persisted hint when write_buf has been discarded.
+  // This is the sendfile path: tx_discard() frees write_buf before the file
+  // body finishes, so we rely on the value captured at header-build time.
+  if (c->tx.content_length_hint > 0) {
+    return (uint64_t)c->tx.content_length_hint;
   }
 
   return 0u;
