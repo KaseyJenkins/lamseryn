@@ -309,6 +309,7 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
   run_client static-head-index --nodelay
   run_client static-large-file --nodelay
   run_client static-sendfile-threshold --nodelay
+  run_client sendfile-keepalive-bytes-regression --nodelay
   run_client method-not-allowed --nodelay
 
   # Force deterministic flush behavior under batched direct logging.
@@ -397,6 +398,17 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
   if ! grep -q "target=/big_threshold.bin status=200 bytes=262145 " "$ACCESS_LOG_FILE"; then
     echo "[itest] expected /big_threshold.bin access log line with bytes=262145" >&2
     grep 'target=/big_threshold.bin' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
+  fi
+
+  # --- stale-hint keep-alive regression ---
+  # The sendfile-keepalive-bytes-regression test sends GET /big.bin (keep-alive)
+  # then DELETE /__stale_hint_probe on the same connection. Match the exact
+  # signature to avoid confusion with other DELETE-producing tests.
+  ka_delete_sig='method=DELETE target=/__stale_hint_probe status=405 bytes=0 '
+  if ! grep -q "$ka_delete_sig" "$ACCESS_LOG_FILE"; then
+    echo "[itest] stale-hint regression: expected exact DELETE signature missing" >&2
+    grep 'method=DELETE' "$ACCESS_LOG_FILE" | head -5 >&2 || true
     exit 1
   fi
 

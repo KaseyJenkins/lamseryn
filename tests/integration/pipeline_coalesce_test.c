@@ -975,6 +975,56 @@ static int test_static_large_file(const char *host, const char *port,
   return 0;
 }
 
+static int test_sendfile_keepalive_bytes_regression(const char *host,
+                                                    const char *port,
+                                                    int nodelay,
+                                                    int timeout_ms,
+                                                    int verbose) {
+  // Regression: on a keep-alive connection, a sendfile response (GET /big.bin)
+  // followed by an error response must log bytes=0 for the second request,
+  // not the stale Content-Length from the first sendfile response.
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *req1 = "GET /big.bin HTTP/1.1\r\n"
+                     "Host: example.com\r\n"
+                     "Connection: keep-alive\r\n"
+                     "\r\n";
+
+  if (send_all(fd, req1, strlen(req1)) < 0) {
+    close(fd);
+    die("sendfile-ka-bytes: send req1 failed: %s", strerror(errno));
+  }
+
+  long cl = -1;
+  if (read_one_response_discard_body(fd, 200, verbose, &cl, NULL, 0) != 0) {
+    close(fd);
+    die("sendfile-ka-bytes: read first response failed");
+  }
+  if (cl != 524288) {
+    die("sendfile-ka-bytes: expected CL=524288, got=%ld", cl);
+  }
+
+  const char *req2 = "DELETE /__stale_hint_probe HTTP/1.1\r\n"
+                     "Host: example.com\r\n"
+                     "Connection: close\r\n"
+                     "\r\n";
+
+  if (send_all(fd, req2, strlen(req2)) < 0) {
+    close(fd);
+    die("sendfile-ka-bytes: send req2 failed: %s", strerror(errno));
+  }
+
+  if (read_one_response_buffered(fd, 405, verbose) != 0) {
+    close(fd);
+    die("sendfile-ka-bytes: read second response failed");
+  }
+
+  close(fd);
+  info("sendfile_keepalive_bytes_regression: OK");
+  return 0;
+}
+
 static int test_static_sendfile_threshold(const char *host, const char *port,
                                          int nodelay, int timeout_ms, int verbose) {
   // Intended to catch sendfile threshold regressions: file is just over the
@@ -2249,6 +2299,7 @@ static void usage(const char *prog) {
           "  static-head-index [-H host] [-P port] [--nodelay] [-v]\n"
           "  static-large-file [-H host] [-P port] [--nodelay] [-v]\n"
           "  static-sendfile-threshold [-H host] [-P port] [--nodelay] [-v]\n"
+          "  sendfile-keepalive-bytes-regression [-H host] [-P port] [--nodelay] [-v]\n"
           "  method-not-allowed [-H host] [-P port] [--nodelay] [-v]\n"
           "  echo-fields [-H host] [-P port] [--nodelay] [-v]\n"
           "  echo-features-all [-H host] [-P port] [--nodelay] [-v]\n"
@@ -2435,6 +2486,10 @@ int main(int argc, char **argv) {
   }
   if (!strcmp(mode, "static-sendfile-threshold")) {
     return test_static_sendfile_threshold(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "sendfile-keepalive-bytes-regression")) {
+    return test_sendfile_keepalive_bytes_regression(host, port, nodelay, timeout_ms, verbose);
   }
 
   if (!strcmp(mode, "method-not-allowed")) {
