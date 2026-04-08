@@ -59,7 +59,10 @@ static inline enum tw_conn_state tw_conn_get_state(const struct conn *c) {
     return TW_CONN_STATE_DRAINING;
   }
   if (conn_tls_handshake_pending(c)) {
-    return TW_CONN_STATE_HEADER_IN_PROGRESS;
+    // TLS connections before handshake completion are semantically idle:
+    // no HTTP data has been exchanged, so use the initial-idle timeout
+    // and its direct-close path (no plaintext 408 on a TLS port).
+    return TW_CONN_STATE_INITIAL_IDLE;
   }
   if (conn_is_closing_no_deadline(c)) {
     // Closing conns normally have no deadlines, except if we explicitly

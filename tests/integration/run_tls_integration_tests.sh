@@ -519,21 +519,66 @@ if observed.startswith(b"HTTP/"):
 PY
 
 echo "[tls-itest] handshake idle timeout closes connection" >&2
-python3 - "$HOST" "$PORT" <<'PY'
+idle_timeout_rc=0
+python3 - "$HOST" "$PORT" <<'PY' || idle_timeout_rc=$?
 import socket, sys, time
 
 host = sys.argv[1]
 port = int(sys.argv[2])
 
 with socket.create_connection((host, port), timeout=2.0) as s:
-    time.sleep(1.1)
-    s.settimeout(1.5)
+  # Distinguish initial-idle timeout (~1000ms) from header-timeout (~500ms).
+  # Probe in a monotonic pre-timeout window to avoid fixed-sleep jitter flake.
+  # Any state transition before ~850ms is considered too early.
+  t0 = time.monotonic()
+  pre_deadline = t0 + 0.85
+  while time.monotonic() < pre_deadline:
+    remaining = pre_deadline - time.monotonic()
+    if remaining <= 0:
+      break
+    s.settimeout(min(0.12, remaining))
     try:
-        _ = s.recv(64)
+      early = s.recv(64)
+      if early == b"":
+        raise SystemExit("idle TLS handshake socket closed too early (< initial idle timeout)")
+      if early:
+        if early.startswith(b"HTTP/"):
+          raise SystemExit("unexpected plaintext HTTP bytes on TLS idle-timeout path")
+        raise SystemExit(
+            f"unexpected early data on idle TLS handshake probe: first_byte=0x{early[0]:02x}")
     except (ConnectionResetError, BrokenPipeError):
-        pass
+      raise SystemExit("idle TLS handshake socket reset too early (< initial idle timeout)")
     except socket.timeout:
-        raise SystemExit("expected idle TLS handshake connection to change state on timeout")
+      continue
+
+  # After the initial-idle timeout window, the connection should transition.
+  deadline = time.monotonic() + 6.0
+  while time.monotonic() < deadline:
+    s.settimeout(0.3)
+    try:
+      data = s.recv(64)
+      if not data:
+        break
+      # Valid post-timeout transitions observed in practice:
+      # - TLS alert record (content type 0x15)
+      if data[0] == 0x15:
+        break
+      if data.startswith(b"HTTP/"):
+        raise SystemExit(
+            "unexpected plaintext HTTP bytes on TLS idle-timeout path")
+      raise SystemExit(
+          f"unexpected post-timeout data on idle TLS handshake probe: first_byte=0x{data[0]:02x}")
+    except (ConnectionResetError, BrokenPipeError):
+      break
+    except socket.timeout:
+      continue
+  else:
+    raise SystemExit("expected idle TLS handshake connection to change state on timeout")
 PY
+if [[ "$idle_timeout_rc" -ne 0 ]]; then
+  echo "[tls-itest] idle timeout test FAILED; server log tail:" >&2
+  tail -n 80 "$LOG_FILE" >&2 || true
+  exit "$idle_timeout_rc"
+fi
 
 echo "[tls-itest] OK" >&2

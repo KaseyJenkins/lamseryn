@@ -1556,8 +1556,13 @@ static int test_body_too_large_chunked_413(const char *host, const char *port,
     die("send body failed: %s", strerror(errno));
   }
   if (send_all(fd, tail, strlen(tail)) < 0) {
-    close(fd);
-    die("send tail failed: %s", strerror(errno));
+    // Once the server detects body-size overflow, it may send 413 and close
+    // before we finish sending the chunk terminator. Treat common close-side
+    // write errors as expected and continue to verify the 413 response.
+    if (errno != EPIPE && errno != ECONNRESET) {
+      close(fd);
+      die("send tail failed: %s", strerror(errno));
+    }
   }
 
   if (read_one_response_buffered(fd, 413, verbose) != 0) {
