@@ -14,6 +14,7 @@ void conn_enter_keepalive_idle(struct conn *c, uint64_t now_ms) {
   c->dl.ka_idle = 1;
   c->dl.closing = 0;
   c->dl.header_start_ms = now_ms;
+  c->dl.header_start_us = time_now_us_monotonic();
 }
 
 void conn_mark_activity(struct conn *c, uint64_t now_ms) {

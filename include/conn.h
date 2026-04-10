@@ -45,6 +45,7 @@ struct req_hdr_entry {
 struct deadline_state {
   uint64_t last_active_ms;
   uint64_t header_start_ms;
+  uint64_t header_start_us;
   uint64_t write_start_ms;
   int ka_idle;
   int closing;

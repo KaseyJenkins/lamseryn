@@ -697,6 +697,7 @@ static int conn_init(struct worker_ctx *w, int fd) {
   c->op_close = (struct op_ctx){.magic = OP_MAGIC, .type = OP_CLOSE, .c = c, .fd = -1};
 
   c->dl.header_start_ms = now;
+  c->dl.header_start_us = time_now_us_monotonic();
 
   if (conn_store_put(fd, c) != 0) {
     conn_recycle(c);
@@ -1103,6 +1104,7 @@ static int conn_try_process_stash(struct worker_ctx *w, struct conn *c, int cfd)
   conn_mark_activity(c, w->now_cached_ms);
   if (!c->h1.headers_done && c->h1.parser_bytes == 0) {
     c->dl.header_start_ms = w->now_cached_ms;
+    c->dl.header_start_us = time_now_us_monotonic();
   }
 
   size_t n = (size_t)c->rx_stash_len;
@@ -1731,6 +1733,7 @@ void worker_accept_success(struct worker_ctx *w, int cfd) {
     }
 
     cacc->dl.header_start_ms = w->now_cached_ms;
+    cacc->dl.header_start_us = time_now_us_monotonic();
     const struct worker_loop_tls_hs_ops hs_ops = worker_loop_build_tls_hs_ops();
     if (worker_loop_tls_handshake_progress(w, cacc, cfd, &hs_ops) < 0) {
       return;

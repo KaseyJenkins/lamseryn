@@ -667,6 +667,7 @@ void worker_loop_read_handle_cqe(struct worker_ctx *w,
 
   if (!c->h1.headers_done && c->h1.parser_bytes == 0) {
     c->dl.header_start_ms = w->now_cached_ms;
+    c->dl.header_start_us = time_now_us_monotonic();
     LOGD_EVERY_N(LOGC_HTTP,
                  128,
                  "READ_FIRSTBYTE fd=%u gen=%u header_start_ms=%llu",
@@ -928,6 +929,7 @@ void worker_loop_process_rx_bytes(struct worker_ctx *w,
 
   if (c->h1.parser_bytes == 0) {
     c->dl.header_start_ms = w->now_cached_ms;
+    c->dl.header_start_us = time_now_us_monotonic();
   }
   if (ops->mark_activity) {
     ops->mark_activity(c, w->now_cached_ms);

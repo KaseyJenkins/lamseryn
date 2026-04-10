@@ -20,7 +20,7 @@ struct access_log_event {
   unsigned remote_port;
   unsigned status;
   uint64_t bytes;
-  unsigned dur_ms;
+  uint64_t dur_us;
   int keepalive;
   int tls;
 };

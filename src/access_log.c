@@ -65,7 +65,7 @@ struct access_log_qentry {
   uint16_t remote_port;
   unsigned status;
   uint64_t bytes;
-  unsigned dur_ms;
+  uint64_t dur_us;
   unsigned char keepalive;
   unsigned char tls;
 };
@@ -237,7 +237,7 @@ static size_t access_log_format_qentry_line(char *out,
   ev.remote_port = (unsigned)item->remote_port;
   ev.status = item->status;
   ev.bytes = item->bytes;
-  ev.dur_ms = item->dur_ms;
+  ev.dur_us = item->dur_us;
   ev.keepalive = item->keepalive ? 1 : 0;
   ev.tls = item->tls ? 1 : 0;
 
@@ -708,7 +708,7 @@ size_t access_log_format_text_line(char *out,
   int n = snprintf(out,
                    out_cap,
                    "ts_ms=%" PRIu64 " worker=%u ip=%s port=%u method=%s target=%s status=%u bytes=%" PRIu64
-                   " dur_ms=%u ka=%d tls=%d trunc=%d\n",
+                   " dur_us=%" PRIu64 " ka=%d tls=%d trunc=%d\n",
                    ev->ts_ms,
                    ev->worker,
                    ip,
@@ -717,7 +717,7 @@ size_t access_log_format_text_line(char *out,
                    target,
                    ev->status,
                    ev->bytes,
-                   ev->dur_ms,
+                   ev->dur_us,
                    ev->keepalive ? 1 : 0,
                    ev->tls ? 1 : 0,
                    target_truncated ? 1 : 0);
@@ -1164,11 +1164,9 @@ void access_log_emit_from_conn(struct worker_ctx *w, struct conn *c) {
 
   const char *method = access_log_method_name(c);
 
-  uint64_t now_ms = w->now_cached_ms ? w->now_cached_ms : time_now_ms_monotonic();
-  uint64_t dur_ms = 0;
-  if (c->dl.header_start_ms > 0 && now_ms >= c->dl.header_start_ms) {
-    dur_ms = now_ms - c->dl.header_start_ms;
-  }
+  uint64_t now_us = time_now_us_monotonic();
+  uint64_t now_ms = now_us / 1000ull;
+  uint64_t dur_us = now_us - c->dl.header_start_us;
 
   struct access_log_qentry qev;
   memset(&qev, 0, sizeof(qev));
@@ -1176,7 +1174,7 @@ void access_log_emit_from_conn(struct worker_ctx *w, struct conn *c) {
   qev.worker = (unsigned)w->cfg.thread_id;
   qev.status = status;
   qev.bytes = access_log_content_length_hint(c);
-  qev.dur_ms = (dur_ms > 0xffffffffull) ? 0xffffffffu : (unsigned)dur_ms;
+  qev.dur_us = dur_us;
   qev.keepalive = c->tx.keepalive ? 1 : 0;
   qev.tls = c->tls_enabled ? 1 : 0;
   qev.remote_port = c->remote_port;
