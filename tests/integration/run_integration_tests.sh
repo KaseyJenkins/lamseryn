@@ -311,6 +311,12 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
   run_client static-sendfile-threshold --nodelay
   run_client sendfile-keepalive-bytes-regression --nodelay
   run_client method-not-allowed --nodelay
+  run_client te-cl-conflict --nodelay
+  run_client too-many-headers --nodelay
+  run_client te-trailers-reject --nodelay
+  run_client body-too-large-cl --nodelay
+  run_client body-timeout --nodelay
+  run_client expect-100-continue-timeout --nodelay
 
   # Force deterministic flush behavior under batched direct logging.
   for _ in $(seq 1 70); do
@@ -353,6 +359,31 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
     cat "$ACCESS_LOG_FILE" >&2 || true
     exit 1
   fi
+  if ! grep -q "status=400" "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=400 in access log" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=408" "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=408 in access log" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=413" "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=413 in access log" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=431" "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=431 in access log" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=501" "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=501 in access log" >&2
+    cat "$ACCESS_LOG_FILE" >&2 || true
+    exit 1
+  fi
   if ! grep -Eq '(^|[[:space:]])ip=' "$ACCESS_LOG_FILE"; then
     echo "[itest] expected ip= field in access log" >&2
     cat "$ACCESS_LOG_FILE" >&2 || true
@@ -388,6 +419,26 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
   if ! grep -q "status=405 bytes=0 " "$ACCESS_LOG_FILE"; then
     echo "[itest] expected status=405 with bytes=0 in access log" >&2
     grep 'status=405' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=408 bytes=0 " "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=408 with bytes=0 in access log" >&2
+    grep 'status=408' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=413 bytes=0 " "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=413 with bytes=0 in access log" >&2
+    grep 'status=413' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=431 bytes=0 " "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=431 with bytes=0 in access log" >&2
+    grep 'status=431' "$ACCESS_LOG_FILE" | head -3 >&2 || true
+    exit 1
+  fi
+  if ! grep -q "status=501 bytes=0 " "$ACCESS_LOG_FILE"; then
+    echo "[itest] expected status=501 with bytes=0 in access log" >&2
+    grep 'status=501' "$ACCESS_LOG_FILE" | head -3 >&2 || true
     exit 1
   fi
   if ! grep -q "target=/big.bin status=200 bytes=524288 " "$ACCESS_LOG_FILE"; then
