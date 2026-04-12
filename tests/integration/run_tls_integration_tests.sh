@@ -69,6 +69,7 @@ DOCROOT_TMP=$(mktemp -d -t lamseryn_tls_itest_docroot.XXXXXX)
 CERT_DIR=$(mktemp -d -t lamseryn_tls_itest_cert.XXXXXX)
 ITEST_INI=$(mktemp -t lamseryn_tls_itest.XXXXXX.ini)
 LOG_FILE=$(mktemp -t lamseryn_tls_itest.XXXXXX.log)
+ACCESS_LOG_FILE=$(mktemp -t lamseryn_tls_access_log.XXXXXX.log)
 
 DOCROOT="$DOCROOT_TMP"
 CERT_FILE="$CERT_DIR/server.crt"
@@ -100,7 +101,7 @@ stop_server() {
 cleanup() {
   stop_server
   rm -rf "$DOCROOT_TMP" "$CERT_DIR" || true
-  rm -f "$ITEST_INI" "$LOG_FILE" || true
+  rm -f "$ITEST_INI" "$LOG_FILE" "$ACCESS_LOG_FILE" || true
 }
 
 trap cleanup EXIT
@@ -164,6 +165,11 @@ header_timeout_ms = 500
 body_timeout_ms = 500
 write_timeout_ms = 2000
 drain_timeout_ms = 200
+access_log_enabled = true
+access_log_path = $ACCESS_LOG_FILE
+access_log_format = text
+access_log_sample = 1
+access_log_min_status = 100
 
 [vhost $SNI_DEFAULT]
 bind = $HOST
@@ -579,6 +585,69 @@ if [[ "$idle_timeout_rc" -ne 0 ]]; then
   echo "[tls-itest] idle timeout test FAILED; server log tail:" >&2
   tail -n 80 "$LOG_FILE" >&2 || true
   exit "$idle_timeout_rc"
+fi
+
+echo "[tls-itest] validating TLS access-log fields" >&2
+stop_server
+
+if [[ ! -f "$ACCESS_LOG_FILE" ]]; then
+  echo "tls-itest: expected access log file to exist: $ACCESS_LOG_FILE" >&2
+  exit 1
+fi
+
+log_lines=$(wc -l <"$ACCESS_LOG_FILE" | tr -d '[:space:]')
+if [[ "$log_lines" -lt "3" ]]; then
+  echo "tls-itest: expected at least 3 TLS access-log lines, got $log_lines" >&2
+  cat "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
+fi
+
+if ! grep -q "method=GET" "$ACCESS_LOG_FILE"; then
+  echo "tls-itest: expected method=GET in TLS access log" >&2
+  cat "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
+fi
+
+if ! grep -q "status=200" "$ACCESS_LOG_FILE"; then
+  echo "tls-itest: expected status=200 in TLS access log" >&2
+  cat "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
+fi
+
+if ! grep -q "target=/large.txt status=200 bytes=262144 " "$ACCESS_LOG_FILE"; then
+  echo "tls-itest: expected /large.txt line with bytes=262144 in TLS access log" >&2
+  grep 'target=/large.txt' "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
+fi
+
+if ! grep -Eq '(^|[[:space:]])dur_us=[0-9]+([[:space:]]|$)' "$ACCESS_LOG_FILE"; then
+  echo "tls-itest: expected dur_us field in TLS access log" >&2
+  cat "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
+fi
+
+if ! grep -Eq '(^|[[:space:]])ip=' "$ACCESS_LOG_FILE"; then
+  echo "tls-itest: expected ip= field in TLS access log" >&2
+  cat "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
+fi
+
+if ! grep -Eq '(^|[[:space:]])port=[1-9][0-9]*([[:space:]]|$)' "$ACCESS_LOG_FILE"; then
+  echo "tls-itest: expected non-zero port= in TLS access log" >&2
+  cat "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
+fi
+
+if ! grep -q "tls=1" "$ACCESS_LOG_FILE"; then
+  echo "tls-itest: expected tls=1 in TLS access log" >&2
+  cat "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
+fi
+
+if grep -q "tls=0" "$ACCESS_LOG_FILE"; then
+  echo "tls-itest: unexpected tls=0 in TLS-only access log" >&2
+  cat "$ACCESS_LOG_FILE" >&2 || true
+  exit 1
 fi
 
 echo "[tls-itest] OK" >&2
