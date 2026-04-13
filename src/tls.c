@@ -4,8 +4,10 @@
 #include <strings.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #include "include/conn.h"
+#include "include/logger.h"
 #include "include/tls.h"
 
 #if ENABLE_TLS
@@ -419,6 +421,188 @@ void tls_ctx_free(struct tls_ctx *ctx) {
   }
 #endif
   free(ctx);
+}
+
+static pthread_rwlock_t g_tls_ctx_lock = PTHREAD_RWLOCK_INITIALIZER;
+
+void tls_ctx_rdlock(void) {
+  pthread_rwlock_rdlock(&g_tls_ctx_lock);
+}
+
+void tls_ctx_unlock(void) {
+  pthread_rwlock_unlock(&g_tls_ctx_lock);
+}
+
+int tls_vhost_effective_enabled(const struct config_t *cfg, const struct vhost_t *vh) {
+  if (!cfg || !vh) {
+    return 0;
+  }
+  if (vh->tls_enabled_set) {
+    return vh->tls_enabled ? 1 : 0;
+  }
+  if (cfg->g.present & GF_TLS_ENABLED) {
+    return cfg->g.tls_enabled ? 1 : 0;
+  }
+  return 0;
+}
+
+static void tls_build_effective_vhost(const struct config_t *cfg,
+                                      const struct vhost_t *vh,
+                                      struct vhost_t *out) {
+  if (!cfg || !vh || !out) {
+    return;
+  }
+
+  *out = *vh;
+  if (!out->tls_cert_file[0] && (cfg->g.present & GF_TLS_CERT_FILE)) {
+    snprintf(out->tls_cert_file, sizeof(out->tls_cert_file), "%s", cfg->g.tls_cert_file);
+  }
+  if (!out->tls_key_file[0] && (cfg->g.present & GF_TLS_KEY_FILE)) {
+    snprintf(out->tls_key_file, sizeof(out->tls_key_file), "%s", cfg->g.tls_key_file);
+  }
+  if (!out->tls_min_version[0] && (cfg->g.present & GF_TLS_MIN_VERSION)) {
+    snprintf(out->tls_min_version, sizeof(out->tls_min_version), "%s", cfg->g.tls_min_version);
+  }
+  if (!out->tls_ciphers[0] && (cfg->g.present & GF_TLS_CIPHERS)) {
+    snprintf(out->tls_ciphers, sizeof(out->tls_ciphers), "%s", cfg->g.tls_ciphers);
+  }
+  if (!out->tls_ciphersuites[0] && (cfg->g.present & GF_TLS_CIPHERSUITES)) {
+    snprintf(out->tls_ciphersuites, sizeof(out->tls_ciphersuites), "%s", cfg->g.tls_ciphersuites);
+  }
+  if (!out->tls_session_tickets_set && (cfg->g.present & GF_TLS_SESSION_TICKETS)) {
+    out->tls_session_tickets = cfg->g.tls_session_tickets ? 1u : 0u;
+    out->tls_session_tickets_set = 1u;
+  }
+  if (!out->tls_session_cache_set && (cfg->g.present & GF_TLS_SESSION_CACHE)) {
+    out->tls_session_cache = cfg->g.tls_session_cache ? 1u : 0u;
+    out->tls_session_cache_set = 1u;
+  }
+}
+
+static void tls_log_effective_vhost_policy(const struct vhost_t *vh,
+                                           const struct vhost_t *vh_eff) {
+  if (!vh || !vh_eff) {
+    return;
+  }
+
+  LOGI(LOGC_CORE,
+       "TLS vhost='%s' bind=%s:%u min=%s tickets=%s cache=%s",
+       vh->name[0] ? vh->name : "(unnamed)",
+       vh->bind,
+       (unsigned)vh->port,
+       vh_eff->tls_min_version[0] ? vh_eff->tls_min_version : "tls1.2(default)",
+       vh_eff->tls_session_tickets_set ? (vh_eff->tls_session_tickets ? "on" : "off")
+                                       : "on(default)",
+       vh_eff->tls_session_cache_set ? (vh_eff->tls_session_cache ? "on" : "off")
+                                     : "on(default)");
+}
+
+int tls_init_vhost_contexts(struct config_t *cfg, char err[256]) {
+  if (!cfg) {
+    return -1;
+  }
+
+  for (int i = 0; i < cfg->vhost_count; ++i) {
+    struct vhost_t *vh = &cfg->vhosts[i];
+    vh->tls_ctx_handle = NULL;
+    if (!tls_vhost_effective_enabled(cfg, vh)) {
+      continue;
+    }
+
+    struct vhost_t vh_eff;
+    tls_build_effective_vhost(cfg, vh, &vh_eff);
+    tls_log_effective_vhost_policy(vh, &vh_eff);
+
+    struct tls_ctx *ctx = NULL;
+    char terr[256] = {0};
+    if (tls_ctx_build_for_vhost(&vh_eff, &ctx, terr) != 0 || !ctx) {
+      if (err) {
+        snprintf(err,
+                 256,
+                 "TLS context build failed for vhost '%s'%s%s",
+                 vh->name,
+                 terr[0] ? ": " : "",
+                 terr[0] ? terr : "");
+      }
+      for (int k = 0; k < cfg->vhost_count; ++k) {
+        if (cfg->vhosts[k].tls_ctx_handle) {
+          tls_ctx_free((struct tls_ctx *)cfg->vhosts[k].tls_ctx_handle);
+          cfg->vhosts[k].tls_ctx_handle = NULL;
+        }
+      }
+      return -1;
+    }
+    vh->tls_ctx_handle = ctx;
+  }
+
+  return 0;
+}
+
+int tls_reload_vhost_contexts(struct config_t *cfg, char err[256]) {
+  if (err) {
+    err[0] = '\0';
+  }
+  if (!cfg) {
+    return -1;
+  }
+
+  struct tls_ctx **new_ctx = (struct tls_ctx **)calloc((size_t)cfg->vhost_count, sizeof(*new_ctx));
+  if (!new_ctx) {
+    if (err) {
+      snprintf(err, 256, "tls reload allocation failed");
+    }
+    return -1;
+  }
+
+  for (int i = 0; i < cfg->vhost_count; ++i) {
+    struct vhost_t *vh = &cfg->vhosts[i];
+    if (!tls_vhost_effective_enabled(cfg, vh)) {
+      continue;
+    }
+
+    struct vhost_t vh_eff;
+    tls_build_effective_vhost(cfg, vh, &vh_eff);
+
+    char terr[256] = {0};
+    if (tls_ctx_build_for_vhost(&vh_eff, &new_ctx[i], terr) != 0 || !new_ctx[i]) {
+      if (err) {
+        snprintf(err,
+                 256,
+                 "TLS reload build failed for vhost '%s'%s%s",
+                 vh->name,
+                 terr[0] ? ": " : "",
+                 terr[0] ? terr : "");
+      }
+      for (int j = 0; j < cfg->vhost_count; ++j) {
+        if (new_ctx[j]) {
+          tls_ctx_free(new_ctx[j]);
+        }
+      }
+      free(new_ctx);
+      return -1;
+    }
+  }
+
+  pthread_rwlock_wrlock(&g_tls_ctx_lock);
+  for (int i = 0; i < cfg->vhost_count; ++i) {
+    struct vhost_t *vh = &cfg->vhosts[i];
+    if (!tls_vhost_effective_enabled(cfg, vh)) {
+      continue;
+    }
+
+    struct tls_ctx *old_ctx = (struct tls_ctx *)vh->tls_ctx_handle;
+    vh->tls_ctx_handle = new_ctx[i];
+    new_ctx[i] = old_ctx;
+  }
+  pthread_rwlock_unlock(&g_tls_ctx_lock);
+
+  for (int i = 0; i < cfg->vhost_count; ++i) {
+    if (new_ctx[i]) {
+      tls_ctx_free(new_ctx[i]);
+    }
+  }
+  free(new_ctx);
+  return 0;
 }
 
 int tls_conn_init(struct conn *c, struct tls_ctx *ctx, int fd, char err[256]) {
