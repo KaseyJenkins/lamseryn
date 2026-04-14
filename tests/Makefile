@@ -66,6 +66,7 @@ TEST_BIN_REQ_ARENA_CACHE := $(BUILD)/test_req_arena_cache_greatest
 TEST_BIN_CONFIG_INI     := $(BUILD)/test_config_ini_greatest
 TEST_BIN_TX             := $(BUILD)/test_tx_greatest
 TEST_BIN_ACCESS_LOG     := $(BUILD)/test_access_log_greatest
+TEST_BIN_CONN_LIFECYCLE := $(BUILD)/test_conn_lifecycle_greatest
 
 .PHONY: all
 all: $(TEST_BIN_REAL) \
@@ -87,7 +88,8 @@ all: $(TEST_BIN_REAL) \
 	$(TEST_BIN_REQ_ARENA_CACHE) \
 	$(TEST_BIN_CONFIG_INI) \
 	$(TEST_BIN_TX) \
-	$(TEST_BIN_ACCESS_LOG)
+	$(TEST_BIN_ACCESS_LOG) \
+	$(TEST_BIN_CONN_LIFECYCLE)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -155,6 +157,9 @@ $(TEST_BIN_REQ_ARENA_CACHE): unit/test_req_arena_cache_greatest.c ../src/req_are
 
 $(TEST_BIN_ACCESS_LOG): unit/test_access_log_greatest.c ../src/access_log.c ../src/logger.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
+$(TEST_BIN_CONN_LIFECYCLE): unit/test_conn_lifecycle_greatest.c ../src/conn_lifecycle.c ../src/conn_store.c ../src/req_arena_stats.c ../src/logger.c $(LIBURING_DEPS) | $(BUILD)
+	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
 TESTS ?= $(wildcard $(BUILD)/test_*)
 TEST_FLAGS ?= -v
