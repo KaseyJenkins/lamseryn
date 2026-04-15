@@ -1,6 +1,7 @@
 # Lamseryn
 
 [![Phase1 Gate](https://github.com/KaseyJenkins/lamseryn/actions/workflows/phase1-gate.yml/badge.svg)](https://github.com/KaseyJenkins/lamseryn/actions/workflows/phase1-gate.yml)
+[![Nightly Latest Deps](https://github.com/KaseyJenkins/lamseryn/actions/workflows/nightly-latest.yml/badge.svg)](https://github.com/KaseyJenkins/lamseryn/actions/workflows/nightly-latest.yml)
 
 A lightweight, io_uring-first HTTP/1.1 server written in C for Linux.
 

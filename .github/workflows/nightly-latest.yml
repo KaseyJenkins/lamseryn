@@ -1,0 +1,87 @@
+name: Nightly Latest Deps
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # every day at 03:00 UTC
+  workflow_dispatch:       # allow manual trigger
+
+jobs:
+  nightly-latest:
+    name: nightly-latest (liburing + OpenSSL tip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential perl
+
+      # ── Latest liburing ──────────────────────────────────────────
+      - name: Resolve latest liburing commit
+        id: liburing-rev
+        run: |
+          rev=$(git ls-remote https://github.com/axboe/liburing.git HEAD | cut -f1)
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Cache liburing build
+        id: cache-liburing
+        uses: actions/cache@v4
+        with:
+          path: third_party/liburing
+          key: liburing-${{ steps.liburing-rev.outputs.rev }}
+
+      - name: Clone and build latest liburing
+        if: steps.cache-liburing.outputs.cache-hit != 'true'
+        run: |
+          rm -rf third_party/liburing
+          git clone --depth 1 https://github.com/axboe/liburing.git third_party/liburing
+          make -C third_party/liburing -j"$(nproc)"
+
+      # ── Latest OpenSSL ───────────────────────────────────────────
+      - name: Resolve latest OpenSSL release tag
+        id: openssl-tag
+        run: |
+          tag=$(git ls-remote --tags --sort=-v:refname \
+                https://github.com/openssl/openssl.git \
+                'openssl-*' | grep -v '\^{}' | head -n1 | sed 's|.*refs/tags/||')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Cache OpenSSL build
+        id: cache-openssl
+        uses: actions/cache@v4
+        with:
+          path: third_party/openssl
+          key: openssl-${{ steps.openssl-tag.outputs.tag }}
+
+      - name: Download and build latest OpenSSL
+        if: steps.cache-openssl.outputs.cache-hit != 'true'
+        run: |
+          rm -rf third_party/openssl
+          git clone --depth 1 --branch "${{ steps.openssl-tag.outputs.tag }}" \
+            https://github.com/openssl/openssl.git third_party/openssl
+          make openssl-local
+
+      # ── Run full gate with latest deps ───────────────────────────
+      - name: Report dependency versions
+        run: |
+          echo "=== liburing ==="
+          grep -E 'VERSION_(MAJOR|MINOR)' third_party/liburing/src/include/liburing/compat.h || \
+            grep -rE 'IO_URING_VERSION' third_party/liburing/src/include/ | head -5
+          echo "=== OpenSSL ==="
+          cat third_party/openssl/_install/include/openssl/opensslv.h | \
+            grep -E 'OPENSSL_VERSION_STR|OPENSSL_FULL_VERSION' | head -5
+
+      - name: Run phase1-gate (latest liburing + OpenSSL)
+        run: make phase1-gate ENABLE_TLS=1
