@@ -462,61 +462,19 @@ static void http_apply_action(struct worker_ctx *w,
     return;
   }
 
-  // Instrumentation and logging based on HTTP pipeline transitions
+  // Instrumentation counters for HTTP pipeline transitions
   if (hres.header_too_big_transition) {
     CTR_INC_DEV(w, cnt_431);
-    const char *reason = c->h1.header_fields_too_many ? "fields" : "bytes";
-    size_t cap = c->h1.header_fields_too_many ? (size_t)c->h1.hdr_fields_max : (size_t)HEADER_CAP;
-    size_t parsed =
-      c->h1.header_fields_too_many ? (size_t)c->h1.hdr_fields_count : c->h1.parser_bytes;
-    LOGW(LOGC_HTTP,
-         "fd=%u gen=%u: 431 reason=%s cap=%zu parsed=%zu headers_done=%d",
-         (unsigned)c->fd,
-         (unsigned)c->generation,
-         reason,
-         cap,
-         parsed,
-         c->h1.headers_done);
   }
-
   if (hres.parse_error_transition) {
     CTR_INC_DEV(w, cnt_400_llhttp);
-    const char *ename = llhttp_errno_name(hres.err);
-    const char *reason = llhttp_get_error_reason(&c->h1.parser);
-    size_t preview = chunk_len < 64 ? chunk_len : 64;
-    LOGW(LOGC_HTTP,
-         "400 llhttp_err=%d(%s) reason=\"%s\" bytes=%zu headers_done=%d "
-         "chunk_len=%zu preview=\"%.*s\" rx_stash_len=%u rx_tail_len=%u "
-         "closing=%d draining=%d keepalive=%d resp_kind=%d",
-         (int)hres.err,
-         ename ? ename : "?",
-         reason ? reason : "?",
-         c->h1.parser_bytes,
-         c->h1.headers_done,
-         (size_t)chunk_len,
-         (int)preview,
-         chunk ? chunk : "",
-         (unsigned)c->rx_stash_len,
-         (unsigned)c->rx_tail_len,
-         c->dl.closing,
-         c->dl.draining,
-         c->tx.keepalive,
-         (int)c->tx.resp_kind);
-  } else if (hres.tolerated_error && hres.err != HPE_OK) {
-    const char *ename = llhttp_errno_name(hres.err);
-    const char *reason = llhttp_get_error_reason(&c->h1.parser);
-    LOGD_EVERY_N(LOGC_HTTP,
-                 64,
-                 "llhttp transient err=%d(%s) reason=\"%s\" bytes=%zu",
-                 (int)hres.err,
-                 ename ? ename : "?",
-                 reason ? reason : "?",
-                 c->h1.parser_bytes);
   }
-
   if (hres.headers_complete_transition) {
     CTR_INC_DEV(w, cnt_headers_complete);
   }
+
+  // Diagnostic logging for parse transitions
+  http_pipeline_log_transitions(c, &hres, chunk, chunk_len);
 
   // For successful requests, clear any old KA/header deadline from the wheel.
   // (State becomes NONE once headers_done is set.)
@@ -568,47 +526,25 @@ static void http_apply_action(struct worker_ctx *w,
         c->h1.want_keepalive = 0;
       }
 
-#if ENABLE_ITEST_ECHO
-      if (itest_echo_try_prepare_response(c)) {
+      struct request_ok_dispatch dispatch = request_dispatch_ok(c, &okplan);
+      switch (dispatch.kind) {
+      case REQUEST_OK_TX_BUFFER:
         stage_tx_buffer_send(w, c, cfd, sqe_w);
-        return;
+        break;
+      case REQUEST_OK_HEADER_RESPONSE:
+        c->h1.want_keepalive = dispatch.response.keepalive;
+        stage_header_response_send(w,
+                                   c,
+                                   cfd,
+                                   sqe_w,
+                                   dispatch.response.kind,
+                                   dispatch.response.keepalive,
+                                   dispatch.response.drain_after_headers,
+                                   dispatch.response.close_after_send);
+        break;
+      case REQUEST_OK_NO_RESPONSE:
+        break;
       }
-#endif
-
-      struct request_route_plan route_plan = request_build_route_plan(c);
-      int static_open_err = 0;
-
-      // Static docroot-backed serving: if DOCROOT is configured, map path_norm to a file.
-      const struct vhost_t *vh = c->vhost;
-      if (route_plan.try_static) {
-        if (static_serve_try_prepare_docroot_response(c, vh->docroot_fd, &static_open_err)) {
-          stage_tx_buffer_send(w, c, cfd, sqe_w);
-          return;
-        }
-      }
-
-      struct request_response_plan ok_response =
-        request_build_response_plan(okplan.kind,
-                                    okplan.keepalive,
-                                    /*drain_after_headers=*/0,
-                                    okplan.close_after_send);
-      static_open_err = request_static_open_err_finalize(static_open_err);
-      struct request_static_outcome static_outcome =
-        request_build_static_outcome(&route_plan, static_open_err);
-      struct request_route_apply_plan terminal_plan =
-        request_build_route_apply_plan(c, ok_response, static_outcome);
-      if (!terminal_plan.send_terminal_response) {
-        return;
-      }
-      c->h1.want_keepalive = terminal_plan.terminal_response.keepalive;
-      stage_header_response_send(w,
-                                 c,
-                                 cfd,
-                                 sqe_w,
-                                 terminal_plan.terminal_response.kind,
-                                 terminal_plan.terminal_response.keepalive,
-                                 terminal_plan.terminal_response.drain_after_headers,
-                                 terminal_plan.terminal_response.close_after_send);
     }
   }
 }
@@ -1303,7 +1239,7 @@ worker_cleanup:
     }
   }
 
-#if INSTRUMENTATION_LEVEL >= LVL_OPS
+#if INSTRUMENTATION_LEVEL >= LVL_DEV
   LOGI(LOGC_CORE,
        "Thread %d: accept_ok=%lu accept_err=%lu eagain=%lu emfile=%lu enfile=%lu other=%lu "
        "send_err=%lu close_err=%lu 408=%lu pool_size=%u",

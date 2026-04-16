@@ -6,6 +6,8 @@
 #include "include/conn.h"
 #include "http_parser.h"
 #include "include/http_pipeline.h"
+#include "include/http1_limits.h"
+#include "include/logger.h"
 
 static inline int has_lf(const char *buf, size_t n) {
   for (size_t i = 0; i < n; ++i) {
@@ -208,4 +210,62 @@ struct http_pipeline_result http_pipeline_feed(struct conn *c, const char *buf, 
   r.action = http_pipeline_classify_action(c);
 
   return r;
+}
+
+void http_pipeline_log_transitions(const struct conn *c,
+                                   const struct http_pipeline_result *hres,
+                                   const char *chunk,
+                                   size_t chunk_len) {
+  if (!c || !hres) {
+    return;
+  }
+
+  if (hres->header_too_big_transition) {
+    const char *reason = c->h1.header_fields_too_many ? "fields" : "bytes";
+    size_t cap = c->h1.header_fields_too_many ? (size_t)c->h1.hdr_fields_max : (size_t)HEADER_CAP;
+    size_t parsed =
+      c->h1.header_fields_too_many ? (size_t)c->h1.hdr_fields_count : c->h1.parser_bytes;
+    LOGW(LOGC_HTTP,
+         "fd=%u gen=%u: 431 reason=%s cap=%zu parsed=%zu headers_done=%d",
+         (unsigned)c->fd,
+         (unsigned)c->generation,
+         reason,
+         cap,
+         parsed,
+         c->h1.headers_done);
+  }
+
+  if (hres->parse_error_transition) {
+    const char *ename = llhttp_errno_name(hres->err);
+    const char *reason = llhttp_get_error_reason(&c->h1.parser);
+    size_t preview = chunk_len < 64 ? chunk_len : 64;
+    LOGW(LOGC_HTTP,
+         "400 llhttp_err=%d(%s) reason=\"%s\" bytes=%zu headers_done=%d "
+         "chunk_len=%zu preview=\"%.*s\" rx_stash_len=%u rx_tail_len=%u "
+         "closing=%d draining=%d keepalive=%d resp_kind=%d",
+         (int)hres->err,
+         ename ? ename : "?",
+         reason ? reason : "?",
+         c->h1.parser_bytes,
+         c->h1.headers_done,
+         (size_t)chunk_len,
+         (int)preview,
+         chunk ? chunk : "",
+         (unsigned)c->rx_stash_len,
+         (unsigned)c->rx_tail_len,
+         c->dl.closing,
+         c->dl.draining,
+         c->tx.keepalive,
+         (int)c->tx.resp_kind);
+  } else if (hres->tolerated_error && hres->err != HPE_OK) {
+    const char *ename = llhttp_errno_name(hres->err);
+    const char *reason = llhttp_get_error_reason(&c->h1.parser);
+    LOGD_EVERY_N(LOGC_HTTP,
+                 64,
+                 "llhttp transient err=%d(%s) reason=\"%s\" bytes=%zu",
+                 (int)hres->err,
+                 ename ? ename : "?",
+                 reason ? reason : "?",
+                 c->h1.parser_bytes);
+  }
 }

@@ -78,3 +78,10 @@ struct http_apply_plan http_pipeline_build_apply_plan(const struct conn *c,
 // Feed bytes into the HTTP/1 parser associated with this connection and
 // classify the next action. Updates struct conn::h1 in-place.
 struct http_pipeline_result http_pipeline_feed(struct conn *c, const char *buf, size_t n);
+
+// Emit diagnostic log messages for HTTP parsing transitions (431, 400,
+// tolerated errors). Counter increments remain the caller's responsibility.
+void http_pipeline_log_transitions(const struct conn *c,
+                                   const struct http_pipeline_result *hres,
+                                   const char *chunk,
+                                   size_t chunk_len);

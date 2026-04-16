@@ -1,6 +1,9 @@
 #include "include/config.h"
 #include "include/conn.h"
 #include "include/request_handlers.h"
+#include "include/http_pipeline.h"
+#include "include/static_serve_utils.h"
+#include "include/itest_echo.h"
 #include <errno.h>
 
 // Response buffers are provided by the server translation unit.
@@ -196,4 +199,51 @@ struct request_route_apply_plan request_build_route_apply_plan(
                                                          /*close_after_send=*/1);
   }
   return plan;
+}
+
+struct request_ok_dispatch request_dispatch_ok(struct conn *c,
+                                               const struct http_ok_plan *okplan) {
+  struct request_ok_dispatch result = {0};
+  result.kind = REQUEST_OK_NO_RESPONSE;
+
+  if (!c || !okplan) {
+    return result;
+  }
+
+#if ENABLE_ITEST_ECHO
+  if (itest_echo_try_prepare_response(c)) {
+    result.kind = REQUEST_OK_TX_BUFFER;
+    return result;
+  }
+#endif
+
+  struct request_route_plan route_plan = request_build_route_plan(c);
+  int static_open_err = 0;
+
+  const struct vhost_t *vh = c->vhost;
+  if (route_plan.try_static) {
+    if (static_serve_try_prepare_docroot_response(c, vh->docroot_fd, &static_open_err)) {
+      result.kind = REQUEST_OK_TX_BUFFER;
+      return result;
+    }
+  }
+
+  struct request_response_plan ok_response =
+    request_build_response_plan(okplan->kind,
+                                okplan->keepalive,
+                                /*drain_after_headers=*/0,
+                                okplan->close_after_send);
+  static_open_err = request_static_open_err_finalize(static_open_err);
+  struct request_static_outcome static_outcome =
+    request_build_static_outcome(&route_plan, static_open_err);
+  struct request_route_apply_plan terminal_plan =
+    request_build_route_apply_plan(c, ok_response, static_outcome);
+
+  if (!terminal_plan.send_terminal_response) {
+    return result;
+  }
+
+  result.kind = REQUEST_OK_HEADER_RESPONSE;
+  result.response = terminal_plan.terminal_response;
+  return result;
 }

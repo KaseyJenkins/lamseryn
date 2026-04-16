@@ -80,3 +80,22 @@ struct request_route_apply_plan request_build_route_apply_plan(
   const struct conn *c,
   struct request_response_plan ok_response,
   struct request_static_outcome static_outcome);
+
+// OK-path dispatch result kinds.
+enum request_ok_dispatch_kind {
+  REQUEST_OK_NO_RESPONSE = 0,
+  REQUEST_OK_TX_BUFFER,
+  REQUEST_OK_HEADER_RESPONSE,
+};
+
+struct request_ok_dispatch {
+  enum request_ok_dispatch_kind kind;
+  struct request_response_plan response;
+};
+
+struct http_ok_plan;
+
+// Dispatch a successful (HP_APPLY_OK) request: try itest echo, static-serve,
+// and terminal response resolution. Returns what the caller should send.
+struct request_ok_dispatch request_dispatch_ok(struct conn *c,
+                                               const struct http_ok_plan *okplan);

@@ -433,6 +433,63 @@ TEST t_apply_plan_ok_mapping_uses_ok_plan(void) {
   PASS();
 }
 
+TEST t_log_transitions_null_guards_no_crash(void) {
+  struct conn c;
+  struct http_pipeline_result r;
+  init_conn_parser(&c);
+  memset(&r, 0, sizeof(r));
+
+  http_pipeline_log_transitions(NULL, &r, "x", 1);
+  http_pipeline_log_transitions(&c, NULL, "x", 1);
+  PASS();
+}
+
+TEST t_log_transitions_431_branch_no_crash(void) {
+  struct conn c;
+  struct http_pipeline_result r;
+  init_conn_parser(&c);
+  memset(&r, 0, sizeof(r));
+
+  c.fd = 7;
+  c.generation = 42;
+  c.h1.header_fields_too_many = 1;
+  c.h1.hdr_fields_max = 16;
+  c.h1.hdr_fields_count = 17;
+  r.header_too_big_transition = 1;
+
+  http_pipeline_log_transitions(&c, &r, NULL, 0);
+  PASS();
+}
+
+TEST t_log_transitions_parse_error_branch_no_crash(void) {
+  struct conn c;
+  struct http_pipeline_result r;
+  init_conn_parser(&c);
+  memset(&r, 0, sizeof(r));
+
+  c.h1.parser_bytes = 123;
+  c.h1.headers_done = 0;
+  r.parse_error_transition = 1;
+  r.err = HPE_INVALID_METHOD;
+
+  http_pipeline_log_transitions(&c, &r, "BAD", 3);
+  PASS();
+}
+
+TEST t_log_transitions_tolerated_branch_no_crash(void) {
+  struct conn c;
+  struct http_pipeline_result r;
+  init_conn_parser(&c);
+  memset(&r, 0, sizeof(r));
+
+  c.h1.parser_bytes = 55;
+  r.tolerated_error = 1;
+  r.err = HPE_INVALID_HEADER_TOKEN;
+
+  http_pipeline_log_transitions(&c, &r, "Ho st", 5);
+  PASS();
+}
+
 SUITE(s_http_pipeline) {
   RUN_TEST(t_headers_complete_ok);
   RUN_TEST(t_exactly_at_cap_is_ok);
@@ -461,6 +518,10 @@ SUITE(s_http_pipeline) {
   RUN_TEST(t_apply_plan_internal_error_precedes_action);
   RUN_TEST(t_apply_plan_error_mapping_uses_error_plan);
   RUN_TEST(t_apply_plan_ok_mapping_uses_ok_plan);
+  RUN_TEST(t_log_transitions_null_guards_no_crash);
+  RUN_TEST(t_log_transitions_431_branch_no_crash);
+  RUN_TEST(t_log_transitions_parse_error_branch_no_crash);
+  RUN_TEST(t_log_transitions_tolerated_branch_no_crash);
 }
 
 GREATEST_MAIN_DEFS();

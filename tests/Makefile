@@ -98,17 +98,17 @@ $(BUILD):
 $(LIBUR_A):
 	$(MAKE) -C $(LIBUR_DIR)
 
-$(TEST_BIN_REAL): unit/test_http_pipeline_real.c $(UUT) $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) | $(BUILD)
+$(TEST_BIN_REAL): unit/test_http_pipeline_real.c $(UUT) $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) ../src/logger.c | $(BUILD)
 	$(CC) $(CFLAGS) $(LLHTTP_CFLAGS) -I vendor -o $@ $^
 
-$(TEST_BIN_GREATEST): unit/test_http_pipeline_greatest.c $(UUT) $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) | $(BUILD)
+$(TEST_BIN_GREATEST): unit/test_http_pipeline_greatest.c $(UUT) $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) ../src/logger.c | $(BUILD)
 	$(CC) $(CFLAGS) $(LLHTTP_CFLAGS) -I vendor -o $@ $^
 
 $(TEST_BIN_STORE): unit/test_conn_store_greatest.c ../src/conn_store.c ../src/logger.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^
 
 $(TEST_BIN_HANDLERS): unit/test_request_handlers_greatest.c ../src/request_handlers.c | $(BUILD)
-	$(CC) $(CFLAGS) -I vendor -o $@ $^
+	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS)
 
 $(TEST_BIN_WHEEL): unit/test_timing_wheel_greatest.c ../src/timing_wheel.c ../src/request_handlers.c $(LIBURING_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
@@ -137,10 +137,10 @@ $(TEST_BIN_HTTP_HEADERS): unit/test_http_headers_greatest.c ../src/http_headers.
 $(TEST_BIN_HTTP1_LIMITS): unit/test_http1_limits_greatest.c ../src/http1_limits.c $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LLHTTP_CFLAGS) -I vendor -o $@ $^
 
-$(TEST_BIN_HTTP_PARSER_EXPECT): unit/test_http_parser_expect_greatest.c $(UUT) $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) | $(BUILD)
+$(TEST_BIN_HTTP_PARSER_EXPECT): unit/test_http_parser_expect_greatest.c $(UUT) $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) ../src/logger.c | $(BUILD)
 	$(CC) $(CFLAGS) $(LLHTTP_CFLAGS) -I vendor -o $@ $^
 
-$(TEST_BIN_HTTP_PARSER_SMUGGLING): unit/test_http_parser_smuggling_greatest.c $(UUT) $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) | $(BUILD)
+$(TEST_BIN_HTTP_PARSER_SMUGGLING): unit/test_http_parser_smuggling_greatest.c $(UUT) $(PARSER) $(PARSER_DEPS) $(LLHTTP_SRC) ../src/logger.c | $(BUILD)
 	$(CC) $(CFLAGS) $(LLHTTP_CFLAGS) -I vendor -o $@ $^
 
 $(TEST_BIN_REQ_ARENA): unit/test_req_arena_greatest.c ../src/req_arena_stats.c | $(BUILD)

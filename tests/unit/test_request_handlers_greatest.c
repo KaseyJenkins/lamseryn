@@ -1,5 +1,6 @@
 #include "include/config.h"
 #include "include/conn.h"
+#include "include/http_pipeline.h"
 #include <errno.h>
 #include <string.h>
 #include "../vendor/greatest_color.h"
@@ -27,6 +28,20 @@ const char RESP_500[] = "H500";
 const size_t RESP_500_len = sizeof(RESP_500) - 1;
 const char RESP_503[] = "H503";
 const size_t RESP_503_len = sizeof(RESP_503) - 1;
+
+static int g_static_serve_result = 0;
+static int g_static_serve_errno = 0;
+static int g_static_serve_calls = 0;
+
+int static_serve_try_prepare_docroot_response(struct conn *c, int docroot_fd, int *static_open_err) {
+  (void)c;
+  (void)docroot_fd;
+  g_static_serve_calls++;
+  if (static_open_err) {
+    *static_open_err = g_static_serve_errno;
+  }
+  return g_static_serve_result;
+}
 
 TEST t_ok_variants_have_no_fixed_response_mapping(void) {
   struct response_view rv1 = request_select_response(RK_OK_KA, 1);
@@ -323,6 +338,126 @@ TEST t_static_serve_plan_sendfile_mode_large_or_empty(void) {
   PASS();
 }
 
+TEST t_request_dispatch_ok_null_guards(void) {
+  struct conn c;
+  struct http_ok_plan okplan;
+  memset(&c, 0, sizeof(c));
+  memset(&okplan, 0, sizeof(okplan));
+
+  struct request_ok_dispatch d1 = request_dispatch_ok(NULL, &okplan);
+  ASSERT_EQ(d1.kind, REQUEST_OK_NO_RESPONSE);
+
+  struct request_ok_dispatch d2 = request_dispatch_ok(&c, NULL);
+  ASSERT_EQ(d2.kind, REQUEST_OK_NO_RESPONSE);
+  PASS();
+}
+
+TEST t_request_dispatch_ok_method_not_allowed_terminal_405(void) {
+  struct conn c;
+  struct http_ok_plan okplan;
+  memset(&c, 0, sizeof(c));
+  memset(&okplan, 0, sizeof(okplan));
+
+  c.h1.method_not_allowed = 1;
+  c.h1.want_keepalive = 1;
+  okplan.kind = RK_OK_KA;
+  okplan.keepalive = 1;
+  okplan.close_after_send = 0;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(d.kind, REQUEST_OK_HEADER_RESPONSE);
+  ASSERT_EQ(d.response.kind, RK_405);
+  ASSERT_EQ(d.response.keepalive, 0);
+  ASSERT_EQ(d.response.close_after_send, 1);
+  ASSERT_EQ(c.h1.want_keepalive, 1); // helper must not mutate; caller applies
+  PASS();
+}
+
+TEST t_request_dispatch_ok_non_static_defaults_404(void) {
+  struct conn c;
+  struct http_ok_plan okplan;
+  memset(&c, 0, sizeof(c));
+  memset(&okplan, 0, sizeof(okplan));
+
+  c.h1.want_keepalive = 1;
+  okplan.kind = RK_OK_KA;
+  okplan.keepalive = 1;
+  okplan.close_after_send = 0;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(d.kind, REQUEST_OK_HEADER_RESPONSE);
+  ASSERT_EQ(d.response.kind, RK_404);
+  ASSERT_EQ(d.response.keepalive, 0);
+  ASSERT_EQ(d.response.close_after_send, 1);
+  ASSERT_EQ(c.h1.want_keepalive, 1); // helper must not mutate; caller applies
+  PASS();
+}
+
+TEST t_request_dispatch_ok_static_success_returns_tx_buffer(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct http_ok_plan okplan;
+  char path[] = "/index.html";
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&okplan, 0, sizeof(okplan));
+
+  vh.features = CFG_FEAT_STATIC;
+  vh.docroot[0] = '/';
+  vh.docroot_fd = 9;
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  okplan.kind = RK_OK_KA;
+  okplan.keepalive = 1;
+  okplan.close_after_send = 0;
+
+  g_static_serve_calls = 0;
+  g_static_serve_result = 1;
+  g_static_serve_errno = 0;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(g_static_serve_calls, 1);
+  ASSERT_EQ(d.kind, REQUEST_OK_TX_BUFFER);
+  PASS();
+}
+
+TEST t_request_dispatch_ok_static_fallback_uses_open_errno(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct http_ok_plan okplan;
+  char path[] = "/index.html";
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&okplan, 0, sizeof(okplan));
+
+  vh.features = CFG_FEAT_STATIC;
+  vh.docroot[0] = '/';
+  vh.docroot_fd = 9;
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+  c.h1.want_keepalive = 1;
+
+  okplan.kind = RK_OK_KA;
+  okplan.keepalive = 1;
+  okplan.close_after_send = 0;
+
+  g_static_serve_calls = 0;
+  g_static_serve_result = 0;
+  g_static_serve_errno = EACCES;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(g_static_serve_calls, 1);
+  ASSERT_EQ(d.kind, REQUEST_OK_HEADER_RESPONSE);
+  ASSERT_EQ(d.response.kind, RK_403);
+  ASSERT_EQ(d.response.keepalive, 0);
+  ASSERT_EQ(d.response.close_after_send, 1);
+  ASSERT_EQ(c.h1.want_keepalive, 1); // helper must not mutate; caller applies
+  PASS();
+}
+
 SUITE(s_request_handlers) {
   RUN_TEST(t_ok_variants_have_no_fixed_response_mapping);
   RUN_TEST(t_errors_map);
@@ -339,6 +474,11 @@ SUITE(s_request_handlers) {
   RUN_TEST(t_static_serve_plan_head_mode);
   RUN_TEST(t_static_serve_plan_buffered_mode_small_get);
   RUN_TEST(t_static_serve_plan_sendfile_mode_large_or_empty);
+  RUN_TEST(t_request_dispatch_ok_null_guards);
+  RUN_TEST(t_request_dispatch_ok_method_not_allowed_terminal_405);
+  RUN_TEST(t_request_dispatch_ok_non_static_defaults_404);
+  RUN_TEST(t_request_dispatch_ok_static_success_returns_tx_buffer);
+  RUN_TEST(t_request_dispatch_ok_static_fallback_uses_open_errno);
 }
 
 GREATEST_MAIN_DEFS();
