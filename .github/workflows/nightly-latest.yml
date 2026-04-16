@@ -5,7 +5,7 @@ env:
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every day at 03:00 UTC
+    - cron: "0 3 * * *"   # every day at 03:00 UTC
   workflow_dispatch:       # allow manual trigger
 
 jobs:
