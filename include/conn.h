@@ -239,3 +239,15 @@ struct conn {
   int tls_want_write;
   void *tls_handle;
 };
+
+// Arm/disarm recv tracking on a connection.
+static inline void conn_arm_recv(struct conn *c) {
+  if (c) {
+    c->tx.recv_armed = 1;
+  }
+}
+static inline void conn_disarm_recv(struct conn *c) {
+  if (c) {
+    c->tx.recv_armed = 0;
+  }
+}

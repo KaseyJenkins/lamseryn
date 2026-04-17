@@ -181,3 +181,59 @@ void worker_loop_write_ready_handle_cqe(struct worker_ctx *w,
                                         struct conn *c,
                                         int cfd,
                                         const struct worker_loop_write_ops *ops);
+
+// ---------------------------------------------------------------------------
+// CQE dispatch helpers
+// ---------------------------------------------------------------------------
+
+// Post a recv (or POLLIN for TLS) SQE for the given connection.
+void post_recv_ptr(struct worker_ctx *w, struct conn *c);
+
+// Stage a header-only response send (e.g. 400, 404, 431, 500).
+void stage_header_response_send(struct worker_ctx *w,
+                                struct conn *c,
+                                int cfd,
+                                struct io_uring_sqe *sqe_w,
+                                enum resp_kind kind,
+                                int keepalive,
+                                int drain_after_headers,
+                                int close_after_send);
+
+// Stage a TX-buffer response send (static file header path).
+void stage_tx_buffer_send(struct worker_ctx *w,
+                          struct conn *c,
+                          int cfd,
+                          struct io_uring_sqe *sqe_w);
+
+// Central HTTP action dispatcher: converts an http_pipeline_result into a
+// response send or continuation.
+void http_apply_action(struct worker_ctx *w,
+                       struct conn *c,
+                       int cfd,
+                       struct http_pipeline_result hres,
+                       const char *chunk,
+                       size_t chunk_len);
+
+// Process pipelined stash bytes through the HTTP parser and dispatch actions.
+// Returns non-zero when a response was staged.
+int conn_try_process_stash(struct worker_ctx *w, struct conn *c, int cfd);
+
+// Vtable builders: construct ops structs for the CQE dispatch handlers.
+struct worker_loop_read_ops worker_loop_build_read_ops(void);
+struct worker_loop_write_ops worker_loop_build_write_ops(void);
+struct worker_loop_tls_write_ops worker_loop_build_tls_write_ops(void);
+struct worker_loop_tls_hs_ops worker_loop_build_tls_hs_ops(void);
+
+// CQE dispatch wrappers: called from the CQE loop conn_handlers vtable.
+void worker_loop_conn_read_dispatch(struct worker_ctx *w,
+                                    struct conn *c,
+                                    int cfd,
+                                    struct io_uring_cqe *cqe);
+void worker_loop_conn_write_dispatch(struct worker_ctx *w,
+                                     struct conn *c,
+                                     int cfd,
+                                     int res);
+void worker_loop_conn_write_ready_dispatch(struct worker_ctx *w,
+                                           struct conn *c,
+                                           int cfd);
+void worker_loop_conn_put_dispatch(struct conn *c);

@@ -15,6 +15,15 @@
 #include "include/time_utils.h"
 #include "include/timing_wheel.h"
 #include "include/tx.h"
+#include "include/buffer_pool.h"
+#include "include/conn_close.h"
+#include "include/conn_lifecycle.h"
+#include "include/http_boundary.h"
+#include "include/rx_stash.h"
+#include "include/request_handlers.h"
+#include "include/access_log.h"
+
+#include "instrumentation/counters_update.h"
 
 static inline void worker_loop_neutralize_sqe(struct io_uring_sqe *sqe) {
   io_uring_prep_nop(sqe);
@@ -1235,4 +1244,513 @@ int worker_loop_tls_handshake_progress(struct worker_ctx *w,
     ops->schedule_or_sync_close(w, cfd);
   }
   return -1;
+}
+
+// ---------------------------------------------------------------------------
+// CQE dispatch helpers
+// ---------------------------------------------------------------------------
+
+void post_recv_ptr(struct worker_ctx *w, struct conn *c) {
+  if (!w || !c) {
+    return;
+  }
+  if (c->fd < 0) {
+    return;
+  }
+  if (conn_is_closing_no_deadline(c)) {
+    return;
+  }
+  if (c->tx.recv_armed) {
+    return;
+  }
+
+  struct io_uring_sqe *sqe = get_sqe_batching(w);
+  if (!sqe) {
+    return;
+  }
+
+  if (c->tls_enabled) {
+    conn_ref(c);
+    io_uring_prep_poll_add(sqe, c->fd, POLLIN);
+    io_uring_sqe_set_data64(sqe, (uint64_t)(uintptr_t)&c->op_read);
+    conn_arm_recv(c);
+    mark_post(w);
+    CTR_INC_DEV(w, cnt_read_ptr_posts);
+    return;
+  }
+
+  conn_ref(c);
+  io_uring_prep_recv(sqe, c->fd, NULL, RBUF_SZ, 0);
+  sqe->flags = 0;
+  sqe->buf_group = buffer_pool_group_id();
+  sqe->flags |= IOSQE_BUFFER_SELECT;
+  io_uring_sqe_set_data64(sqe, (uint64_t)(uintptr_t)&c->op_read);
+
+  conn_arm_recv(c);
+
+  mark_post(w);
+  CTR_INC_DEV(w, cnt_read_ptr_posts);
+}
+
+void stage_header_response_send(struct worker_ctx *w,
+                                struct conn *c,
+                                int cfd,
+                                struct io_uring_sqe *sqe_w,
+                                enum resp_kind kind,
+                                int keepalive,
+                                int drain_after_headers,
+                                int close_after_send) {
+  if (!w || !c) {
+    return;
+  }
+
+  // During graceful drain, do not allow keep-alive reuse for terminal responses.
+  const int force_close = w->is_draining;
+  const int effective_keepalive = force_close ? 0 : keepalive;
+  const int effective_close_after_send = force_close ? 1 : close_after_send;
+  if (force_close && keepalive) {
+    CTR_INC_DEV(w, cnt_shutdown_drain_ka_suppressed);
+  }
+
+  struct request_response_plan plan = request_build_response_plan(kind,
+                                                                  effective_keepalive,
+                                                                  drain_after_headers,
+                                                                  effective_close_after_send);
+  struct tx_next_io out = {0};
+  (void)tx_begin_headers(&c->tx,
+                         plan.kind,
+                         plan.response.buf,
+                         plan.response.len,
+                         plan.keepalive,
+                         plan.drain_after_headers,
+                         &out);
+
+  if (plan.close_after_send) {
+    conn_prepare_close_after_send(w, c);
+  }
+
+  if (c->tls_enabled) {
+    struct worker_loop_tls_write_ops tops = worker_loop_build_tls_write_ops();
+    (void)worker_loop_tls_try_send_pending(w, c, cfd, &tops);
+    return;
+  }
+
+  if (!sqe_w) {
+    return;
+  }
+
+  conn_ref(c);
+  io_uring_prep_send(sqe_w, cfd, out.buf, out.len, MSG_NOSIGNAL);
+  io_uring_sqe_set_data64(sqe_w, (uint64_t)(uintptr_t)&c->op_write);
+  mark_post(w);
+}
+
+void stage_tx_buffer_send(struct worker_ctx *w,
+                          struct conn *c,
+                          int cfd,
+                          struct io_uring_sqe *sqe_w) {
+  if (!w || !c) {
+    return;
+  }
+
+  if (c->tls_enabled) {
+    struct worker_loop_tls_write_ops tops = worker_loop_build_tls_write_ops();
+    (void)worker_loop_tls_try_send_pending(w, c, cfd, &tops);
+    return;
+  }
+
+  if (!sqe_w) {
+    return;
+  }
+
+  conn_ref(c);
+  io_uring_prep_send(sqe_w, cfd, c->tx.write_buf, c->tx.write_len, MSG_NOSIGNAL);
+  io_uring_sqe_set_data64(sqe_w, (uint64_t)(uintptr_t)&c->op_write);
+  mark_post(w);
+}
+
+void http_apply_action(struct worker_ctx *w,
+                       struct conn *c,
+                       int cfd,
+                       struct http_pipeline_result hres,
+                       const char *chunk,
+                       size_t chunk_len) {
+  struct http_apply_plan plan = http_pipeline_build_apply_plan(c, &hres);
+
+  // Internal server error (e.g. OOM during request capture): respond 500 and close.
+  // This should take precedence over client-induced parse errors.
+  if (plan.kind == HP_APPLY_INTERNAL_ERROR) {
+    struct http_error_plan ieplan = plan.error;
+
+    struct io_uring_sqe *sqe_w = c->tls_enabled ? NULL : get_sqe_batching(w);
+    if (!c->tls_enabled && !sqe_w) {
+      CTR_INC_DEV(w, cnt_sqe_starvation_close);
+      schedule_or_sync_close(w, cfd);
+      return;
+    }
+
+    stage_header_response_send(w,
+                               c,
+                               cfd,
+                               sqe_w,
+                               ieplan.kind,
+                               ieplan.keepalive,
+                               ieplan.drain_after_headers,
+                               ieplan.close_after_send);
+    return;
+  }
+
+  // Instrumentation counters for HTTP pipeline transitions
+  if (hres.header_too_big_transition) {
+    CTR_INC_DEV(w, cnt_431);
+  }
+  if (hres.parse_error_transition) {
+    CTR_INC_DEV(w, cnt_400_llhttp);
+  }
+  if (hres.headers_complete_transition) {
+    CTR_INC_DEV(w, cnt_headers_complete);
+  }
+
+  // Diagnostic logging for parse transitions
+  http_pipeline_log_transitions(c, &hres, chunk, chunk_len);
+
+  // For successful requests, clear any old KA/header deadline from the wheel.
+  // (State becomes NONE once headers_done is set.)
+  if (plan.reschedule_on_ok) {
+    tw_reschedule(w, c, w->now_cached_ms);
+  }
+
+  if (plan.kind == HP_APPLY_ERROR) {
+    struct http_error_plan eplan = plan.error;
+    struct io_uring_sqe *sqe_w = c->tls_enabled ? NULL : get_sqe_batching(w);
+    if (!c->tls_enabled && !sqe_w) {
+      CTR_INC_DEV(w, cnt_sqe_starvation_close);
+      schedule_or_sync_close(w, cfd);
+    } else {
+      if (eplan.kind == RK_431) {
+        conn_prepare_431_draining(w, c, c->dl.last_active_ms, w->now_cached_ms);
+      }
+
+      stage_header_response_send(w,
+                                 c,
+                                 cfd,
+                                 sqe_w,
+                                 eplan.kind,
+                                 eplan.keepalive,
+                                 eplan.drain_after_headers,
+                                 eplan.close_after_send);
+    }
+  } else if (plan.kind == HP_APPLY_CONTINUE) {
+    if (!conn_is_closing_no_deadline(c)) {
+      // Do NOT reset pending_line_error here; keep it sticky until LF or headers_complete
+      post_recv_ptr(w, c);
+    }
+    // refresh header-related deadline (initial idle or header timeout)
+    tw_reschedule(w, c, w->now_cached_ms);
+  } else {
+    struct io_uring_sqe *sqe_w = c->tls_enabled ? NULL : get_sqe_batching(w);
+    if (!c->tls_enabled && !sqe_w) {
+      CTR_INC_DEV(w, cnt_sqe_starvation_close);
+      schedule_or_sync_close(w, cfd);
+    } else {
+      struct http_ok_plan okplan = plan.ok;
+
+      // During drain we finish one in-flight request and then close.
+      if (w->is_draining) {
+        if (okplan.keepalive) {
+          CTR_INC_DEV(w, cnt_shutdown_drain_ka_suppressed);
+        }
+        okplan.keepalive = 0;
+        c->h1.want_keepalive = 0;
+      }
+
+      struct request_ok_dispatch dispatch = request_dispatch_ok(c, &okplan);
+      switch (dispatch.kind) {
+      case REQUEST_OK_TX_BUFFER:
+        stage_tx_buffer_send(w, c, cfd, sqe_w);
+        break;
+      case REQUEST_OK_HEADER_RESPONSE:
+        c->h1.want_keepalive = dispatch.response.keepalive;
+        stage_header_response_send(w,
+                                   c,
+                                   cfd,
+                                   sqe_w,
+                                   dispatch.response.kind,
+                                   dispatch.response.keepalive,
+                                   dispatch.response.drain_after_headers,
+                                   dispatch.response.close_after_send);
+        break;
+      case REQUEST_OK_NO_RESPONSE:
+        break;
+      }
+    }
+  }
+}
+
+int conn_try_process_stash(struct worker_ctx *w, struct conn *c, int cfd) {
+  if (!w || !c || cfd < 0) {
+    return 0;
+  }
+  if (c->rx_stash_len == 0) {
+    return 0;
+  }
+  if (!c->rx_stash) {
+    return 0;
+  }
+  if (c->dl.closing || c->dl.draining) {
+    return 0;
+  }
+
+  // Treat stash as already-received bytes becoming visible now.
+  conn_mark_activity(c, w->now_cached_ms);
+  if (!c->h1.headers_done && c->h1.parser_bytes == 0) {
+    c->dl.header_start_ms = w->now_cached_ms;
+    c->dl.header_start_us = time_now_us_monotonic();
+  }
+
+  size_t n = (size_t)c->rx_stash_len;
+  struct http_pipeline_result agg;
+  memset(&agg, 0, sizeof(agg));
+  agg.action = HP_ACTION_CONTINUE;
+  agg.err = HPE_OK;
+
+  size_t consumed = 0;
+
+  // Stage 1: headers (boundary-limited)
+  if (!c->h1.headers_done && !c->h1.parse_error && !c->h1.header_too_big && !c->h1.unsupported_te) {
+    size_t feed_len = n;
+    size_t unused_tail = 0;
+    conn_split_on_header_end(c, c->rx_stash, n, &feed_len, &unused_tail);
+
+    if (feed_len > 0) {
+      struct http_pipeline_result r1 = http_pipeline_feed(c, c->rx_stash, feed_len);
+      agg.header_too_big_transition |= r1.header_too_big_transition;
+      agg.parse_error_transition |= r1.parse_error_transition;
+      agg.headers_complete_transition |= r1.headers_complete_transition;
+      agg.tolerated_error |= r1.tolerated_error;
+      if (r1.err != HPE_OK) {
+        agg.err = r1.err;
+      }
+
+      conn_rx_tail_update_after_feed(c, c->rx_stash, feed_len);
+
+      // If llhttp paused at the boundary, consume only up to error_pos so
+      // pipelined bytes remain for the next request.
+      size_t used = feed_len;
+      if (r1.err == HPE_PAUSED) {
+        const char *pos = llhttp_get_error_pos(&c->h1.parser);
+        const char *base = c->rx_stash;
+        if (pos && pos >= base && pos <= base + feed_len) {
+          used = (size_t)(pos - base);
+        }
+      }
+      consumed = used;
+    }
+  }
+
+  // Stage 2: body bytes (Content-Length or chunked)
+  if (consumed < n && c->h1.headers_done && !c->h1.message_done && !c->h1.parse_error
+      && !c->h1.header_too_big && !c->h1.unsupported_te) {
+    size_t avail = n - consumed;
+    bool is_chunked = (c->h1.te_count > 0 && c->h1.te_chunked && !c->h1.te_other);
+    if (is_chunked) {
+      size_t body_feed = avail;
+      if (body_feed > 0) {
+        struct http_pipeline_result r2 = http_pipeline_feed(c, c->rx_stash + consumed, body_feed);
+        agg.header_too_big_transition |= r2.header_too_big_transition;
+        agg.parse_error_transition |= r2.parse_error_transition;
+        agg.headers_complete_transition |= r2.headers_complete_transition;
+        agg.tolerated_error |= r2.tolerated_error;
+        if (r2.err != HPE_OK) {
+          agg.err = r2.err;
+        }
+
+        size_t used = body_feed;
+        if (r2.err == HPE_PAUSED) {
+          const char *pos = llhttp_get_error_pos(&c->h1.parser);
+          const char *base = c->rx_stash + consumed;
+          // llhttp records `error_pos` as the current pointer when pausing.
+          // For on_message_complete pause this is effectively the first byte
+          // of the next pipelined request (or endp), so do NOT +1.
+          if (pos && pos >= base && pos <= base + body_feed) {
+            used = (size_t)(pos - base);
+          }
+        }
+        consumed += used;
+      }
+    } else {
+      uint64_t rem = c->h1.body_remaining;
+      size_t body_feed = (rem < (uint64_t)avail) ? (size_t)rem : avail;
+      if (body_feed > 0) {
+        struct http_pipeline_result r2 = http_pipeline_feed(c, c->rx_stash + consumed, body_feed);
+        agg.header_too_big_transition |= r2.header_too_big_transition;
+        agg.parse_error_transition |= r2.parse_error_transition;
+        agg.headers_complete_transition |= r2.headers_complete_transition;
+        agg.tolerated_error |= r2.tolerated_error;
+        if (r2.err != HPE_OK) {
+          agg.err = r2.err;
+        }
+
+        if (c->h1.body_remaining >= (uint64_t)body_feed) {
+          c->h1.body_remaining -= (uint64_t)body_feed;
+        } else {
+          c->h1.body_remaining = 0;
+        }
+        consumed += body_feed;
+      }
+    }
+  }
+
+  agg.action = http_pipeline_classify_action(c);
+
+  http_apply_action(w, c, cfd, agg, c->rx_stash, consumed ? consumed : n);
+
+  conn_rx_stash_consume(c, consumed);
+  return (agg.action != HP_ACTION_CONTINUE);
+}
+
+// ---------------------------------------------------------------------------
+// Vtable builders and CQE dispatch wrappers
+// ---------------------------------------------------------------------------
+
+// Forward-declare the local write dispatch so the TLS write-ops vtable can
+// reference it.
+static void write_handle_cqe(struct worker_ctx *w, struct conn *c, int cfd, int res);
+
+struct worker_loop_read_ops worker_loop_build_read_ops(void) {
+  return (struct worker_loop_read_ops){
+    .is_closing_no_deadline = conn_is_closing_no_deadline,
+    .post_recv_ptr = post_recv_ptr,
+    .schedule_or_sync_close = schedule_or_sync_close,
+    .mark_activity = conn_mark_activity,
+    .split_on_header_end = conn_split_on_header_end,
+    .rx_tail_update_after_feed = conn_rx_tail_update_after_feed,
+    .rx_stash_append = conn_rx_stash_append,
+    .apply_action = http_apply_action,
+    .conn_put = conn_put,
+  };
+}
+
+struct worker_loop_write_ops worker_loop_build_write_ops(void) {
+  return (struct worker_loop_write_ops){
+    .maybe_flush = maybe_flush,
+    .arm_write_timeout = conn_arm_write_timeout,
+    .clear_write_timeout = conn_clear_write_timeout,
+    .tx_close_file = tx_close_file,
+    .emit_access_log = access_log_emit_from_conn,
+    .post_recv_ptr = post_recv_ptr,
+    .conn_reset_request = conn_reset_request,
+    .conn_try_process_stash = conn_try_process_stash,
+    .tw_reschedule = tw_reschedule,
+    .conn_ref = conn_ref,
+    .conn_put = conn_put,
+    .schedule_or_sync_close = schedule_or_sync_close,
+  };
+}
+
+struct worker_loop_tls_write_ops worker_loop_build_tls_write_ops(void) {
+  return (struct worker_loop_tls_write_ops){
+    .arm_write_timeout = conn_arm_write_timeout,
+    .post_tls_pollout_ptr = worker_loop_post_tls_pollout,
+    .is_closing_no_deadline = conn_is_closing_no_deadline,
+    .post_recv_ptr = post_recv_ptr,
+    .schedule_or_sync_close = schedule_or_sync_close,
+    .write_handle_cqe = write_handle_cqe,
+  };
+}
+
+struct worker_loop_tls_hs_ops worker_loop_build_tls_hs_ops(void) {
+  return (struct worker_loop_tls_hs_ops){
+    .is_closing_no_deadline = conn_is_closing_no_deadline,
+    .post_recv_ptr = post_recv_ptr,
+    .post_tls_pollout_ptr = worker_loop_post_tls_pollout,
+    .tw_reschedule = tw_reschedule,
+    .schedule_or_sync_close = schedule_or_sync_close,
+  };
+}
+
+static void write_handle_cqe(struct worker_ctx *w, struct conn *c, int cfd, int res) {
+  const struct worker_loop_write_ops wops = worker_loop_build_write_ops();
+  worker_loop_write_handle_cqe(w, c, cfd, res, &wops);
+}
+
+static void write_ready_handle_cqe(struct worker_ctx *w, struct conn *c, int cfd) {
+  if (conn_tls_handshake_pending(c)) {
+    tx_notify_poll_disarmed_staged(&c->tx);
+    conn_mark_activity(c, w->now_cached_ms);
+    const struct worker_loop_tls_hs_ops hs_ops = worker_loop_build_tls_hs_ops();
+    (void)worker_loop_tls_handshake_progress(w, c, cfd, &hs_ops);
+    return;
+  }
+
+  if (c && c->tls_enabled) {
+    struct worker_loop_tls_write_ops tops = worker_loop_build_tls_write_ops();
+    worker_loop_tls_write_ready_handle_cqe(w, c, cfd, conn_mark_activity, &tops);
+    return;
+  }
+
+  const struct worker_loop_write_ops wops = worker_loop_build_write_ops();
+  worker_loop_write_ready_handle_cqe(w, c, cfd, &wops);
+}
+
+static void read_handle_cqe(struct worker_ctx *w,
+                            struct conn *c,
+                            int cfd,
+                            struct io_uring_cqe *cqe) {
+  const struct worker_loop_read_ops rops = worker_loop_build_read_ops();
+
+  if (!w || !cqe) {
+    return;
+  }
+
+  if (!c || cfd < 0 || c->dl.closing) {
+    if (c) {
+      conn_put(c);
+    }
+    io_uring_cqe_seen(&w->ring, cqe);
+    return;
+  }
+
+  if (conn_tls_handshake_pending(c)) {
+    conn_disarm_recv(c);
+    const struct worker_loop_tls_hs_ops hs_ops = worker_loop_build_tls_hs_ops();
+
+    if (cqe->res < 0 && cqe->res != -EAGAIN && cqe->res != -EINTR) {
+      schedule_or_sync_close(w, cfd);
+    } else {
+      conn_mark_activity(c, w->now_cached_ms);
+      (void)worker_loop_tls_handshake_progress(w, c, cfd, &hs_ops);
+    }
+
+    io_uring_cqe_seen(&w->ring, cqe);
+    conn_put(c);
+    return;
+  }
+
+  if (c->tls_enabled) {
+    const struct worker_loop_tls_write_ops tops = worker_loop_build_tls_write_ops();
+    worker_loop_tls_read_handle_cqe(w, c, cfd, cqe, &rops, &tops);
+    return;
+  }
+
+  worker_loop_read_handle_cqe(w, c, cfd, cqe, &rops);
+}
+
+void worker_loop_conn_write_dispatch(struct worker_ctx *w, struct conn *c, int cfd, int res) {
+  write_handle_cqe(w, c, cfd, res);
+}
+
+void worker_loop_conn_write_ready_dispatch(struct worker_ctx *w, struct conn *c, int cfd) {
+  write_ready_handle_cqe(w, c, cfd);
+}
+
+void worker_loop_conn_read_dispatch(struct worker_ctx *w,
+                                    struct conn *c,
+                                    int cfd,
+                                    struct io_uring_cqe *cqe) {
+  read_handle_cqe(w, c, cfd, cqe);
+}
+
+void worker_loop_conn_put_dispatch(struct conn *c) {
+  conn_put(c);
 }
