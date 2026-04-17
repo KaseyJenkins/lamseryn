@@ -34,6 +34,7 @@ struct worker_ctx {
   int need_submit; // hot: ring_ops
   int sqes_pending; // hot: ring_ops
   uint64_t now_cached_ms; // hot: CQE loop timing
+  int is_draining; // cached g_shutdown_state == SHUTDOWN_DRAIN
 
   // HTTP parser settings (mostly immutable after init)
   llhttp_settings_t http_settings;
