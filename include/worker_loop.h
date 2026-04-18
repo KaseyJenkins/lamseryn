@@ -36,27 +36,17 @@ int worker_loop_try_handle_nonconn(struct worker_ctx *w,
                                    struct io_uring_cqe *cqe,
                                    int is_running);
 
-// Connection-op callbacks supplied by the caller for connection dispatch.
-struct worker_loop_conn_handlers {
-  void (*on_write)(struct worker_ctx *w, struct conn *c, int cfd, int res);
-  void (*on_write_ready)(struct worker_ctx *w, struct conn *c, int cfd);
-  void (*on_read)(struct worker_ctx *w, struct conn *c, int cfd, struct io_uring_cqe *cqe);
-  void (*on_conn_put)(struct conn *c);
-};
-
 // Handle connection-bound op types owned by worker loop helpers.
 // Returns non-zero when the op was handled (including CQE seen when applicable).
 int worker_loop_try_handle_conn(struct worker_ctx *w,
                                 struct op_ctx *op,
-                                struct io_uring_cqe *cqe,
-                                const struct worker_loop_conn_handlers *handlers);
+                                struct io_uring_cqe *cqe);
 
 // Process one fetched CQE batch through decode/dispatch helpers.
 // Returns 0 after processing all entries.
 int worker_loop_process_cqe_batch(struct worker_ctx *w,
                                   struct io_uring_cqe **cqes,
                                   unsigned cqe_count,
-                                  const struct worker_loop_conn_handlers *handlers,
                                   int is_running);
 
 struct worker_loop_read_ops {
@@ -224,16 +214,4 @@ struct worker_loop_write_ops worker_loop_build_write_ops(void);
 struct worker_loop_tls_write_ops worker_loop_build_tls_write_ops(void);
 struct worker_loop_tls_hs_ops worker_loop_build_tls_hs_ops(void);
 
-// CQE dispatch wrappers: called from the CQE loop conn_handlers vtable.
-void worker_loop_conn_read_dispatch(struct worker_ctx *w,
-                                    struct conn *c,
-                                    int cfd,
-                                    struct io_uring_cqe *cqe);
-void worker_loop_conn_write_dispatch(struct worker_ctx *w,
-                                     struct conn *c,
-                                     int cfd,
-                                     int res);
-void worker_loop_conn_write_ready_dispatch(struct worker_ctx *w,
-                                           struct conn *c,
-                                           int cfd);
-void worker_loop_conn_put_dispatch(struct conn *c);
+

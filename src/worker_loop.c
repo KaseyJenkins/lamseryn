@@ -32,6 +32,13 @@ static inline void worker_loop_neutralize_sqe(struct io_uring_sqe *sqe) {
   sqe->buf_group = 0;
 }
 
+static void write_handle_cqe(struct worker_ctx *w, struct conn *c, int cfd, int res);
+static void write_ready_handle_cqe(struct worker_ctx *w, struct conn *c, int cfd);
+static void read_handle_cqe(struct worker_ctx *w,
+                             struct conn *c,
+                             int cfd,
+                             struct io_uring_cqe *cqe);
+
 bool worker_loop_cancel_write_poll_if_armed(struct worker_ctx *w, struct conn *c) {
   if (!w || !c || !tx_pollout_is_armed(&c->tx)) {
     return false;
@@ -440,9 +447,8 @@ int worker_loop_try_handle_nonconn(struct worker_ctx *w,
 
 int worker_loop_try_handle_conn(struct worker_ctx *w,
                                 struct op_ctx *op,
-                                struct io_uring_cqe *cqe,
-                                const struct worker_loop_conn_handlers *handlers) {
-  if (!w || !op || !cqe || !handlers) {
+                                struct io_uring_cqe *cqe) {
+  if (!w || !op || !cqe) {
     return 0;
   }
 
@@ -455,9 +461,7 @@ int worker_loop_try_handle_conn(struct worker_ctx *w,
     }
     if (c) {
       c->fd = -1;
-      if (handlers->on_conn_put) {
-        handlers->on_conn_put(c);
-      }
+      conn_put(c);
     }
     io_uring_cqe_seen(&w->ring, cqe);
     return 1;
@@ -468,20 +472,16 @@ int worker_loop_try_handle_conn(struct worker_ctx *w,
     int cfd = c ? c->fd : -1;
 
     if (!c || cfd < 0) {
-      if (c && handlers->on_conn_put) {
-        handlers->on_conn_put(c);
+      if (c) {
+        conn_put(c);
       }
       io_uring_cqe_seen(&w->ring, cqe);
       return 1;
     }
 
-    if (handlers->on_write) {
-      handlers->on_write(w, c, cfd, cqe->res);
-    }
+    write_handle_cqe(w, c, cfd, cqe->res);
 
-    if (handlers->on_conn_put) {
-      handlers->on_conn_put(c);
-    }
+    conn_put(c);
     io_uring_cqe_seen(&w->ring, cqe);
     return 1;
   }
@@ -491,20 +491,18 @@ int worker_loop_try_handle_conn(struct worker_ctx *w,
     int cfd = c ? c->fd : -1;
 
     if (!c || cfd < 0) {
-      if (c && handlers->on_conn_put) {
-        handlers->on_conn_put(c);
+      if (c) {
+        conn_put(c);
       }
       io_uring_cqe_seen(&w->ring, cqe);
       return 1;
     }
 
-    if (!(c->dl.closing && c->tx.resp_kind == RK_NONE) && handlers->on_write_ready) {
-      handlers->on_write_ready(w, c, cfd);
+    if (!(c->dl.closing && c->tx.resp_kind == RK_NONE)) {
+      write_ready_handle_cqe(w, c, cfd);
     }
 
-    if (handlers->on_conn_put) {
-      handlers->on_conn_put(c);
-    }
+    conn_put(c);
     io_uring_cqe_seen(&w->ring, cqe);
     return 1;
   }
@@ -512,9 +510,7 @@ int worker_loop_try_handle_conn(struct worker_ctx *w,
   case OP_READ: {
     struct conn *c = op->c;
     int cfd = c ? c->fd : -1;
-    if (handlers->on_read) {
-      handlers->on_read(w, c, cfd, cqe);
-    }
+    read_handle_cqe(w, c, cfd, cqe);
     return 1;
   }
 
@@ -526,9 +522,8 @@ int worker_loop_try_handle_conn(struct worker_ctx *w,
 int worker_loop_process_cqe_batch(struct worker_ctx *w,
                                   struct io_uring_cqe **cqes,
                                   unsigned cqe_count,
-                                  const struct worker_loop_conn_handlers *handlers,
                                   int is_running) {
-  if (!w || !cqes || cqe_count == 0 || !handlers) {
+  if (!w || !cqes || cqe_count == 0) {
     return -EINVAL;
   }
 
@@ -542,7 +537,7 @@ int worker_loop_process_cqe_batch(struct worker_ctx *w,
     if (worker_loop_try_handle_nonconn(w, op, cqe, is_running)) {
       continue;
     }
-    if (worker_loop_try_handle_conn(w, op, cqe, handlers)) {
+    if (worker_loop_try_handle_conn(w, op, cqe)) {
       continue;
     }
 
@@ -1610,12 +1605,8 @@ int conn_try_process_stash(struct worker_ctx *w, struct conn *c, int cfd) {
 }
 
 // ---------------------------------------------------------------------------
-// Vtable builders and CQE dispatch wrappers
+// Vtable builders
 // ---------------------------------------------------------------------------
-
-// Forward-declare the local write dispatch so the TLS write-ops vtable can
-// reference it.
-static void write_handle_cqe(struct worker_ctx *w, struct conn *c, int cfd, int res);
 
 struct worker_loop_read_ops worker_loop_build_read_ops(void) {
   return (struct worker_loop_read_ops){
@@ -1734,23 +1725,4 @@ static void read_handle_cqe(struct worker_ctx *w,
   }
 
   worker_loop_read_handle_cqe(w, c, cfd, cqe, &rops);
-}
-
-void worker_loop_conn_write_dispatch(struct worker_ctx *w, struct conn *c, int cfd, int res) {
-  write_handle_cqe(w, c, cfd, res);
-}
-
-void worker_loop_conn_write_ready_dispatch(struct worker_ctx *w, struct conn *c, int cfd) {
-  write_ready_handle_cqe(w, c, cfd);
-}
-
-void worker_loop_conn_read_dispatch(struct worker_ctx *w,
-                                    struct conn *c,
-                                    int cfd,
-                                    struct io_uring_cqe *cqe) {
-  read_handle_cqe(w, c, cfd, cqe);
-}
-
-void worker_loop_conn_put_dispatch(struct conn *c) {
-  conn_put(c);
 }

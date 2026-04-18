@@ -692,17 +692,9 @@ static void *worker_main(void *arg) {
     w->is_draining = (g_shutdown_state == SHUTDOWN_DRAIN);
     access_log_runtime_poll(w);
 
-    const struct worker_loop_conn_handlers conn_handlers = {
-      .on_write = worker_loop_conn_write_dispatch,
-      .on_write_ready = worker_loop_conn_write_ready_dispatch,
-      .on_read = worker_loop_conn_read_dispatch,
-      .on_conn_put = worker_loop_conn_put_dispatch,
-    };
-
     (void)worker_loop_process_cqe_batch(w,
                                         cqes,
                                         cqe_count,
-                                        &conn_handlers,
                                         (g_shutdown_state == SHUTDOWN_RUNNING));
     submit_if_pending(w);
   }
