@@ -155,6 +155,20 @@ LLHTTP_OBJ := $(patsubst $(LLHTTP_DIR)/src/%.c,$(BUILD)/llhttp/%.o,$(LLHTTP_SRC)
 
 INI_OBJ := $(BUILD)/inih/ini.o
 
+# Per-object app build: derive object lists from source lists.
+APP_OBJ       := $(patsubst %.c,$(BUILD)/app/%.o,$(SRC))
+LOGGER_OBJ    := $(patsubst %.c,$(BUILD)/app/%.o,$(LOGGER_SRC))
+
+# Include generated dependency files (silently if absent).
+-include $(APP_OBJ:.o=.d)
+-include $(LOGGER_OBJ:.o=.d)
+
+# $(LIBURING_DEPS) is order-only so the liburing sub-build (which regenerates
+# compat.h via configure) finishes before we include its headers.
+$(BUILD)/app/%.o: %.c $(APP_DEFS_STAMP) | $(LIBURING_DEPS) $(BUILD)/app $(BUILD)/app/src
+	@mkdir -p $(dir $@)
+	$(CC) $(APP_CFLAGS) -MMD -MP -c $< -o $@
+
 .PHONY: all
 all: $(BUILD)/$(APP)
 
@@ -199,13 +213,15 @@ itest-tls:
 	@$(MAKE) -B ENABLE_TLS=1 $(BUILD)/$(APP_ITEST) && \
 	OPENSSL_PREFIX="$(OPENSSL_PREFIX)" bash tests/integration/run_tls_integration_tests.sh "$(BUILD)/$(APP_ITEST)" "$(TLS_ITEST_PORT)"
 
-$(BUILD)/$(APP): $(APP_DEFS_STAMP) $(SRC) $(LOGGER_SRC) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
-	$(CC) $(APP_CFLAGS) -o $@ $(SRC) $(LOGGER_SRC) $(LIBURING_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
+$(BUILD)/$(APP): $(APP_DEFS_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+	$(CC) $(APP_CFLAGS) -o $@ $(APP_OBJ) $(LOGGER_OBJ) $(LIBURING_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
-$(BUILD)/$(APP_GATES): $(APP_DEFS_STAMP) $(SRC) $(LOGGER_SRC) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
-	$(CC) $(APP_CFLAGS) -o $@ $(SRC) $(LOGGER_SRC) $(LIBURING_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
+$(BUILD)/$(APP_GATES): $(APP_DEFS_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+	$(CC) $(APP_CFLAGS) -o $@ $(APP_OBJ) $(LOGGER_OBJ) $(LIBURING_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
-$(BUILD)/$(APP_ITEST): $(SRC_ITEST) $(LOGGER_SRC) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+# itest uses extra -D flags that differ from the main build, so it compiles
+# from source rather than reusing main app objects.
+$(BUILD)/$(APP_ITEST): $(APP_DEFS_STAMP) $(SRC_ITEST) $(LOGGER_SRC) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
 	$(CC) $(APP_CFLAGS) -o $@ $(SRC_ITEST) $(LOGGER_SRC) \
 		-DBODY_TIMEOUT_MS=200 -DMAX_BODY_BYTES=32 -DENABLE_ITEST_ECHO=1 -DACCESS_LOG_ENABLE_TEST_HOOKS=1 \
 		$(LIBURING_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
@@ -302,6 +318,12 @@ $(BUILD)/llhttp:
 
 $(BUILD)/inih:
 	mkdir -p "$(BUILD)/inih"
+
+$(BUILD)/app:
+	mkdir -p "$(BUILD)/app"
+
+$(BUILD)/app/src:
+	mkdir -p "$(BUILD)/app/src"
 
 $(BUILD):
 	mkdir -p "$(BUILD)"
