@@ -1,5 +1,6 @@
 # Lamseryn
 
+[![Release](https://img.shields.io/github/release/KaseyJenkins/lamseryn.svg)](https://github.com/KaseyJenkins/lamseryn/releases)
 [![Phase1 Gate](https://github.com/KaseyJenkins/lamseryn/actions/workflows/phase1-gate.yml/badge.svg)](https://github.com/KaseyJenkins/lamseryn/actions/workflows/phase1-gate.yml)
 [![Nightly Latest Deps](https://github.com/KaseyJenkins/lamseryn/actions/workflows/nightly-latest.yml/badge.svg)](https://github.com/KaseyJenkins/lamseryn/actions/workflows/nightly-latest.yml)
 
