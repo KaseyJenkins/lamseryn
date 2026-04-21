@@ -24,7 +24,8 @@ int static_serve_tx_set_dynamic_response_ex(struct conn *c,
                                             size_t content_len,
                                             const void *body,
                                             size_t body_send_len,
-                                            int keepalive);
+                                            int keepalive,
+                                            const char *extra_headers);
 
 // Try preparing a static-file response from docroot for the current request.
 // Returns 1 when c->tx is staged for header send (and optional sendfile body),

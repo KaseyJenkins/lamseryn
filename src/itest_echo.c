@@ -80,7 +80,8 @@ int itest_echo_try_prepare_response(struct conn *c) {
                                               boff,
                                               body_ptr,
                                               body_send_len,
-                                              keep)
+                                              keep,
+                                              "")
       == 0) {
     return 1;
   }

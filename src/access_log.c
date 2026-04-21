@@ -735,6 +735,8 @@ static unsigned access_log_status_from_kind(enum resp_kind kind) {
   case RK_OK_CLOSE:
   case RK_OK_KA:
     return 200u;
+  case RK_304:
+    return 304u;
   case RK_400:
     return 400u;
   case RK_403:

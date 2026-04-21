@@ -1,13 +1,17 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "include/conn.h"
+#include "include/http_headers.h"
 #include "include/request_handlers.h"
 #include "include/static_serve_utils.h"
 #include "include/tx.h"
@@ -183,13 +187,234 @@ int static_serve_openat_beneath_nofollow(int root_dirfd, const char *relpath) {
   return -1;
 }
 
+// ---------------------------------------------------------------------------
+// Conditional-request (304 Not Modified) helpers.
+// ---------------------------------------------------------------------------
+
+// Produces a strong-looking quoted ETag: "inode-size-mtimeUs".
+// Returns the number of bytes written (excluding NUL), or 0 on failure.
+static size_t static_serve_format_etag(char *buf, size_t cap, const struct stat *st) {
+  if (!buf || cap == 0 || !st) {
+    return 0;
+  }
+  uint64_t mtime_us =
+    (uint64_t)st->st_mtim.tv_sec * 1000000ULL + (uint64_t)(st->st_mtim.tv_nsec / 1000);
+  int n = snprintf(buf, cap, "\"%llx-%llx-%llx\"",
+                   (unsigned long long)st->st_ino,
+                   (unsigned long long)st->st_size,
+                   (unsigned long long)mtime_us);
+  if (n <= 0 || (size_t)n >= cap) {
+    return 0;
+  }
+  return (size_t)n;
+}
+
+// Produces: "Sun, 06 Nov 1994 08:49:37 GMT"
+// Uses static English name arrays to be locale-independent (RFC 7231 §7.1.1.1).
+// Returns bytes written (excluding NUL), or 0 on failure.
+static size_t static_serve_format_last_modified(char *buf, size_t cap, const struct stat *st) {
+  if (!buf || cap == 0 || !st) {
+    return 0;
+  }
+  static const char *const days[]   = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+  static const char *const months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                        "Jul","Aug","Sep","Oct","Nov","Dec"};
+  struct tm tm;
+  if (!gmtime_r(&st->st_mtim.tv_sec, &tm)) {
+    return 0;
+  }
+  if (tm.tm_wday < 0 || tm.tm_wday > 6 || tm.tm_mon < 0 || tm.tm_mon > 11) {
+    return 0;
+  }
+  int n = snprintf(buf, cap, "%s, %02d %s %04d %02d:%02d:%02d GMT",
+                   days[tm.tm_wday], tm.tm_mday, months[tm.tm_mon],
+                   1900 + tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
+  if (n <= 0 || (size_t)n >= cap) {
+    return 0;
+  }
+  return (size_t)n;
+}
+
+// Only handles the preferred IMF-fixdate format: "Sun, 06 Nov 1994 08:49:37 GMT".
+// Locale-independent: uses static English month names instead of strptime.
+// Returns 0 on success, -1 on parse failure.
+static int static_serve_parse_http_date(const char *str, time_t *out) {
+  if (!str || !out) {
+    return -1;
+  }
+  static const char *const months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                        "Jul","Aug","Sep","Oct","Nov","Dec"};
+  const char *p = str;
+
+  // Skip 3-char day name and ", " (we don't validate the day name).
+  if (p[0] == '\0' || p[1] == '\0' || p[2] == '\0' || p[3] != ',' || p[4] != ' ') {
+    return -1;
+  }
+  p += 5;
+
+  // 2-digit day-of-month.
+  if (p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9' || p[2] != ' ') {
+    return -1;
+  }
+  int mday = (p[0] - '0') * 10 + (p[1] - '0');
+  p += 3;
+
+  // 3-char month name.
+  int mon = -1;
+  for (int i = 0; i < 12; ++i) {
+    if (p[0] == months[i][0] && p[1] == months[i][1] && p[2] == months[i][2]) {
+      mon = i;
+      break;
+    }
+  }
+  if (mon < 0 || p[3] != ' ') {
+    return -1;
+  }
+  p += 4;
+
+  // 4-digit year.
+  if (p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9' ||
+      p[2] < '0' || p[2] > '9' || p[3] < '0' || p[3] > '9' || p[4] != ' ') {
+    return -1;
+  }
+  int year = (p[0]-'0')*1000 + (p[1]-'0')*100 + (p[2]-'0')*10 + (p[3]-'0');
+  p += 5;
+
+  // HH:MM:SS GMT
+  if (p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9' || p[2] != ':' ||
+      p[3] < '0' || p[3] > '9' || p[4] < '0' || p[4] > '9' || p[5] != ':' ||
+      p[6] < '0' || p[6] > '9' || p[7] < '0' || p[7] > '9' ||
+      p[8] != ' ' || p[9] != 'G' || p[10] != 'M' || p[11] != 'T') {
+    return -1;
+  }
+  int hour = (p[0]-'0')*10 + (p[1]-'0');
+  int min  = (p[3]-'0')*10 + (p[4]-'0');
+  int sec  = (p[6]-'0')*10 + (p[7]-'0');
+
+  // RFC 7232 §3.3: ignore If-Modified-Since with an invalid HTTP-date.
+  if (mday < 1 || mday > 31 || hour > 23 || min > 59 || sec > 60) {
+    return -1;
+  }
+
+  struct tm tm;
+  memset(&tm, 0, sizeof(tm));
+  tm.tm_mday = mday;
+  tm.tm_mon  = mon;
+  tm.tm_year = year - 1900;
+  tm.tm_hour = hour;
+  tm.tm_min  = min;
+  tm.tm_sec  = sec;
+
+  *out = timegm(&tm);
+  return 0;
+}
+
+// Evaluate RFC 7232 conditional-request logic for a static file.
+// Returns 1 if the response should be 304 Not Modified, 0 otherwise.
+// Caller must ensure the request method is GET or HEAD.
+static int static_serve_check_not_modified(const struct conn *c,
+                                           const struct stat *st,
+                                           const char *etag,
+                                           size_t etag_len) {
+  if (!c || !st) {
+    return 0;
+  }
+
+  // RFC 7232 §3.2: If-None-Match takes precedence over If-Modified-Since.
+  uint16_t inm_len = 0;
+  const char *inm =
+    http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_IF_NONE_MATCH, &inm_len);
+  if (inm && inm_len > 0) {
+    // Walk the comma-separated ETag list and compare each token as a whole
+    // quoted string with OWS trimming (RFC 7232 §3.2).
+    // Wildcard "*" matches any ETag.
+    const char *p = inm;
+    const char *end = inm + inm_len;
+    while (p < end) {
+      // Skip OWS before token.
+      while (p < end && (*p == ' ' || *p == '\t')) p++;
+      if (p >= end) break;
+
+      // Find end of token (up to next comma or end of string).
+      const char *tok = p;
+      while (p < end && *p != ',') p++;
+      const char *tok_end = p;
+
+      // Trim trailing OWS from token.
+      while (tok_end > tok && (tok_end[-1] == ' ' || tok_end[-1] == '\t')) tok_end--;
+
+      size_t tok_len = (size_t)(tok_end - tok);
+
+      // Wildcard.
+      if (tok_len == 1 && tok[0] == '*') {
+        return 1;
+      }
+      // Weak comparison (RFC 7232 §2.3.2): strip optional W/ prefix, then
+      // compare the quoted opaque-tag. Our server emits strong ETags, but
+      // clients or intermediaries may add the weak prefix.
+      const char *cmp = tok;
+      size_t cmp_len = tok_len;
+      if (cmp_len >= 2 && cmp[0] == 'W' && cmp[1] == '/') {
+        cmp += 2;
+        cmp_len -= 2;
+      }
+      if (etag && etag_len > 0 && cmp_len == etag_len
+          && memcmp(cmp, etag, etag_len) == 0) {
+        return 1;
+      }
+
+      // Advance past comma.
+      if (p < end) p++;
+    }
+    // If-None-Match was present but no token matched — do NOT fall through to
+    // If-Modified-Since (RFC 7232 §6 precedence rule).
+    return 0;
+  }
+
+  // RFC 7232 §3.3: If-Modified-Since (only when If-None-Match is absent).
+  uint16_t ims_len = 0;
+  const char *ims = http_header_find_value(
+    c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_IF_MODIFIED_SINCE, &ims_len);
+  if (ims && ims_len > 0) {
+    time_t ims_time;
+    if (static_serve_parse_http_date(ims, &ims_time) == 0) {
+      if (st->st_mtim.tv_sec <= ims_time) {
+        return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
+// Build the combined ETag + Last-Modified header string for inclusion in
+// both 200 and 304 responses. Returns bytes written (excluding NUL), 0 on failure.
+static size_t static_serve_build_validator_headers(char *buf,
+                                                   size_t cap,
+                                                   const char *etag,
+                                                   size_t etag_len,
+                                                   const char *last_mod,
+                                                   size_t last_mod_len) {
+  if (!buf || cap == 0) {
+    return 0;
+  }
+  int n = snprintf(buf, cap, "ETag: %.*s\r\nLast-Modified: %.*s\r\n",
+                   (int)etag_len, etag ? etag : "",
+                   (int)last_mod_len, last_mod ? last_mod : "");
+  if (n <= 0 || (size_t)n >= cap) {
+    return 0;
+  }
+  return (size_t)n;
+}
+
 int static_serve_tx_set_dynamic_response_ex(struct conn *c,
                                             const char *status_line,
                                             const char *content_type,
                                             size_t content_len,
                                             const void *body,
                                             size_t body_send_len,
-                                            int keepalive) {
+                                            int keepalive,
+                                            const char *extra_headers) {
   if (!c || !status_line) {
     return -1;
   }
@@ -208,6 +433,7 @@ int static_serve_tx_set_dynamic_response_ex(struct conn *c,
                        body_send_len,
                        keepalive,
                        /*drain_after_headers=*/0,
+                       extra_headers,
                        &buf,
                        &len)
       != 0) {
@@ -255,6 +481,61 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
     size_t fsz = (size_t)st.st_size;
     const int keep = c->h1.want_keepalive ? 1 : 0;
     const char *ctype = static_serve_mime_type_for_path(relpath);
+
+    char etag_buf[64];
+    size_t etag_len = static_serve_format_etag(etag_buf, sizeof(etag_buf), &st);
+
+    char last_mod_buf[64];
+    size_t last_mod_len =
+      static_serve_format_last_modified(last_mod_buf, sizeof(last_mod_buf), &st);
+
+    char validator_hdrs[256];
+    size_t vhdr_len = static_serve_build_validator_headers(
+      validator_hdrs, sizeof(validator_hdrs),
+      etag_buf, etag_len,
+      last_mod_buf, last_mod_len);
+    if (vhdr_len == 0) {
+      validator_hdrs[0] = '\0';
+    }
+
+    const struct vhost_t *vh = c->vhost;
+    if (vh && (vh->features & CFG_FEAT_CONDITIONAL)
+        && (c->h1.method == HTTP_GET || c->h1.method == HTTP_HEAD)
+        && etag_len > 0) {
+      if (static_serve_check_not_modified(c, &st, etag_buf, etag_len)) {
+        close(fd);
+        fd = -1;
+        // 304 must not contain a message body (RFC 7232 §4.1).
+        // Content-Type and Content-Length are omitted; we send only validators.
+        const char *buf_304 = NULL;
+        size_t len_304 = 0;
+        if (tx_build_headers(&c->tx,
+                             "304 Not Modified",
+                             /*content_type=*/NULL,
+                             /*content_len=*/0,
+                             /*body=*/NULL,
+                             /*body_send_len=*/0,
+                             keep,
+                             /*drain_after_headers=*/0,
+                             validator_hdrs,
+                             &buf_304,
+                             &len_304)
+            == 0) {
+          struct tx_next_io out304 = {0};
+          (void)tx_begin_headers(&c->tx,
+                                 RK_304,
+                                 buf_304,
+                                 len_304,
+                                 keep,
+                                 /*drain_after_headers=*/0,
+                                 &out304);
+          return 1;
+        }
+        // If header build failed, fall through to normal close-fd path below.
+        goto done;
+      }
+    }
+
     struct request_static_serve_plan static_serve = request_build_static_serve_plan(c, fsz);
     int attempt_sendfile = 0;
 
@@ -267,7 +548,8 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
     case REQUEST_STATIC_SERVE_HEAD:
       close(fd);
       fd = -1;
-      if (static_serve_tx_set_dynamic_response_ex(c, "200 OK", ctype, fsz, NULL, 0, keep) == 0) {
+      if (static_serve_tx_set_dynamic_response_ex(c, "200 OK", ctype, fsz, NULL, 0, keep,
+                                                   validator_hdrs) == 0) {
         return 1;
       }
       break;
@@ -297,8 +579,8 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
 #if ENABLE_ITEST_ECHO
           c->tx.itest_static_mode = "buffered";
 #endif
-          if (static_serve_tx_set_dynamic_response_ex(c, "200 OK", ctype, fsz, file_buf, fsz, keep)
-              == 0) {
+          if (static_serve_tx_set_dynamic_response_ex(c, "200 OK", ctype, fsz, file_buf, fsz, keep,
+                                                       validator_hdrs) == 0) {
             free(file_buf);
             return 1;
           }
@@ -324,7 +606,8 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
 #if ENABLE_ITEST_ECHO
       c->tx.itest_static_mode = "sendfile";
 #endif
-      if (static_serve_tx_set_dynamic_response_ex(c, "200 OK", ctype, fsz, NULL, 0, keep) == 0) {
+      if (static_serve_tx_set_dynamic_response_ex(c, "200 OK", ctype, fsz, NULL, 0, keep,
+                                                   validator_hdrs) == 0) {
         if (c->tx.file_fd >= 0) {
           close(c->tx.file_fd);
           c->tx.file_fd = -1;
@@ -342,6 +625,7 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
     }
   }
 
+done:
   if (fd >= 0) {
     close(fd);
   }

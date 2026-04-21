@@ -35,6 +35,7 @@ enum resp_kind {
   RK_NONE = 0,
   RK_OK_CLOSE,
   RK_OK_KA,
+  RK_304,
   RK_400,
   RK_403,
   RK_404,

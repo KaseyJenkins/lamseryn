@@ -1,5 +1,6 @@
 #include "include/http_headers.h"
 
+#include "include/conn.h"
 #include "include/types.h"
 
 #include <string.h>
@@ -54,4 +55,24 @@ int http_header_lookup_lower(const char *name, size_t name_len, enum http_header
     }
   }
   return -1;
+}
+
+const char *http_header_find_value(const struct req_hdr_entry *hdrs,
+                                   uint8_t hdr_count,
+                                   enum http_header_id id,
+                                   uint16_t *out_len) {
+  if (!hdrs || hdr_count == 0) {
+    return NULL;
+  }
+
+  for (uint8_t i = 0; i < hdr_count; ++i) {
+    const struct req_hdr_entry *e = &hdrs[i];
+    if ((enum http_header_id)e->id == id) {
+      if (out_len) {
+        *out_len = e->value_len;
+      }
+      return e->value;
+    }
+  }
+  return NULL;
 }

@@ -278,6 +278,7 @@ static inline void h1_finalize_interested_header(struct conn *c) {
 
           e->name = nm;
           e->name_len = nlen;
+          e->id = (uint8_t)id;
           e->value = vv;
           e->value_len = (uint16_t)vlen;
         }

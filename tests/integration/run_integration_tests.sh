@@ -727,4 +727,7 @@ start_server "all"
 echo "[itest] running echo feature headers (SERVER_FEATURES=all)" >&2
 run_client echo-features-all --nodelay
 
+echo "[itest] running conditional 304 Not Modified (SERVER_FEATURES=all)" >&2
+run_client conditional-304 --nodelay
+
 echo "[itest] OK" >&2

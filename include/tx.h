@@ -63,6 +63,7 @@ int tx_build_headers(struct tx_state_t *tx,
                      size_t body_send_len,
                      int keepalive,
                      int drain_after_headers,
+                     const char *extra_headers,
                      const char **buf,
                      size_t *len);
 

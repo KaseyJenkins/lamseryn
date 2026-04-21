@@ -70,6 +70,7 @@ int tx_build_headers(struct tx_state_t *tx,
                      size_t body_send_len,
                      int keepalive,
                      int drain_after_headers,
+                     const char *extra_headers,
                      const char **buf,
                      size_t *len) {
   if (!tx || !status_line || !buf || !len) {
@@ -81,9 +82,6 @@ int tx_build_headers(struct tx_state_t *tx,
   }
 
   const char *conn_hdr = keepalive ? "keep-alive" : "close";
-  if (!content_type) {
-    content_type = "application/octet-stream";
-  }
 
 #if ENABLE_ITEST_ECHO
   const char *itest_static_mode = tx->itest_static_mode;
@@ -100,25 +98,47 @@ int tx_build_headers(struct tx_state_t *tx,
   }
 #endif
 
-  char head[640];
+  if (!extra_headers) {
+    extra_headers = "";
+  }
+
+  // When content_type is NULL we omit Content-Type and Content-Length entirely.
+  // This is used for 304 Not Modified (RFC 7232 §4.1: no message body).
+  // Sizing: "Content-Type: " (14) + longest MIME ~38 + "\r\n" (2)
+  //       + "Content-Length: " (16) + 20 digits + "\r\n" (2) = ~92. 128 is safe.
+  char content_lines[128];
+  if (content_type) {
+    int cl = snprintf(content_lines, sizeof(content_lines),
+                      "Content-Type: %s\r\n"
+                      "Content-Length: %zu\r\n",
+                      content_type, content_len);
+    if (cl <= 0 || (size_t)cl >= sizeof(content_lines)) {
+      return -1;
+    }
+  } else {
+    content_lines[0] = '\0';
+  }
+
+  char head[1024];
   int hlen = snprintf(head,
                       sizeof(head),
                       "HTTP/1.1 %s\r\n"
-                      "Content-Type: %s\r\n"
-                      "Content-Length: %zu\r\n"
+                      "%s"
                       "Connection: %s\r\n"
 #if ENABLE_ITEST_ECHO
                       "%s"
 #endif
+                      "%s"
                       "\r\n",
                       status_line,
-                      content_type,
-                      content_len,
+                      content_lines,
                       conn_hdr
 #if ENABLE_ITEST_ECHO
                       ,
                       itest_hdr
 #endif
+                      ,
+                      extra_headers
   );
   if (hlen <= 0 || (size_t)hlen >= sizeof(head)) {
     return -1;

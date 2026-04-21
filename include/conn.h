@@ -35,7 +35,8 @@
 #endif
 
 struct req_hdr_entry {
-  uint8_t name_len;
+  uint8_t  name_len;
+  uint8_t  id;        // enum http_header_id, resolved at parse time.
   uint16_t value_len;
   char *name;
   char *value;

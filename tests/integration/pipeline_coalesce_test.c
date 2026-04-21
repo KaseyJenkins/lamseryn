@@ -2276,6 +2276,266 @@ static int test_shutdown_second_signal_forces_immediate(const char *host,
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// 304 Not Modified integration tests.
+// Requires the server to have CFG_FEAT_CONDITIONAL enabled (features=all).
+// ---------------------------------------------------------------------------
+
+// Helper: send a request, read one response, return status code.
+// Fills out_headers (NUL-terminated) and out_content_length.
+static int send_and_read_status(int fd, const char *req, int verbose,
+                                char *out_headers, size_t out_headers_sz,
+                                long *out_cl) {
+  if (send_all(fd, req, strlen(req)) < 0)
+    return -1;
+
+  // Read until header end.
+  static const char SEP[] = "\r\n\r\n";
+  const size_t SEP_LEN = 4;
+  size_t hdr_end = (size_t)-1;
+
+  for (;;) {
+    if (hdr_end == (size_t)-1) {
+      for (size_t i = 0; i + SEP_LEN <= g_len; ++i) {
+        if (memcmp(g_buf + i, SEP, SEP_LEN) == 0) {
+          hdr_end = i + SEP_LEN;
+          break;
+        }
+      }
+    }
+    if (hdr_end != (size_t)-1)
+      break;
+    if (g_len == sizeof(g_buf))
+      return -1;
+    ssize_t r = recv(fd, g_buf + g_len, sizeof(g_buf) - g_len, 0);
+    if (r < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    if (r == 0) return -1;
+    g_len += (size_t)r;
+  }
+
+  // Copy headers.
+  size_t copy = hdr_end;
+  if (copy > out_headers_sz - 1)
+    copy = out_headers_sz - 1;
+  memcpy(out_headers, g_buf, copy);
+  out_headers[copy] = 0;
+
+  int st = parse_status_code(out_headers);
+  long cl = parse_content_length(out_headers);
+  if (cl < 0) cl = 0;
+  if (out_cl) *out_cl = cl;
+
+  if (verbose)
+    info("resp: status=%d cl=%ld", st, cl);
+
+  // Drain body.
+  size_t total_needed = hdr_end + (size_t)cl;
+  while (g_len < total_needed) {
+    if (g_len == sizeof(g_buf)) return -1;
+    ssize_t r = recv(fd, g_buf + g_len, sizeof(g_buf) - g_len, 0);
+    if (r < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    if (r == 0) return -1;
+    g_len += (size_t)r;
+  }
+
+  // Preserve leftovers for pipelined next response.
+  size_t leftover = g_len - total_needed;
+  if (leftover)
+    memmove(g_buf, g_buf + total_needed, leftover);
+  g_len = leftover;
+
+  return st;
+}
+
+static int test_conditional_304(const char *host, const char *port,
+                                int nodelay, int timeout_ms, int verbose) {
+  char etag[128];
+  char last_mod[128];
+  etag[0] = 0;
+  last_mod[0] = 0;
+
+  // 1) Initial GET to capture ETag and Last-Modified.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("conditional_304: initial GET expected 200, got %d", st);
+    if (cl <= 0)
+      die("conditional_304: initial GET had no body (cl=%ld)", cl);
+
+    if (parse_header_value_simple(hdrs, "ETag", etag, sizeof(etag)) != 0)
+      die("conditional_304: initial GET missing ETag header");
+    if (parse_header_value_simple(hdrs, "Last-Modified", last_mod, sizeof(last_mod)) != 0)
+      die("conditional_304: initial GET missing Last-Modified header");
+    if (verbose)
+      info("captured ETag=%s Last-Modified=%s", etag, last_mod);
+  }
+
+  // 2) If-None-Match with matching ETag => 304.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    char req[512];
+    snprintf(req, sizeof(req),
+             "GET /index.html HTTP/1.1\r\n"
+             "Host: example.com\r\n"
+             "If-None-Match: %s\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             etag);
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 304)
+      die("conditional_304: INM match expected 304, got %d", st);
+    if (cl != 0)
+      die("conditional_304: 304 response must have no body, got cl=%ld", cl);
+    // 304 must include ETag.
+    char etag304[128];
+    if (parse_header_value_simple(hdrs, "ETag", etag304, sizeof(etag304)) != 0)
+      die("conditional_304: 304 missing ETag header");
+    // Must NOT include Content-Type.
+    char ct[128];
+    if (parse_header_value_simple(hdrs, "Content-Type", ct, sizeof(ct)) == 0)
+      die("conditional_304: 304 must not include Content-Type");
+  }
+
+  // 3) If-None-Match with non-matching ETag => 200.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "If-None-Match: \"no-match-etag\"\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("conditional_304: INM no-match expected 200, got %d", st);
+    if (cl <= 0)
+      die("conditional_304: 200 response must have body");
+  }
+
+  // 4) If-Modified-Since with matching date => 304.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    // Use a far-future date so the file's mtime is <= IMS.
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "If-Modified-Since: Sun, 01 Jan 2034 00:00:00 GMT\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 304)
+      die("conditional_304: IMS future-date expected 304, got %d", st);
+    if (cl != 0)
+      die("conditional_304: 304 response must have no body (IMS), got cl=%ld", cl);
+  }
+
+  // 5) If-Modified-Since with old date => 200.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "If-Modified-Since: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("conditional_304: IMS epoch expected 200, got %d", st);
+  }
+
+  // 6) INM no-match blocks IMS fallback (RFC 7232 §6 precedence).
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "If-None-Match: \"wrong-etag\"\r\n"
+        "If-Modified-Since: Sun, 01 Jan 2034 00:00:00 GMT\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("conditional_304: INM-no-match+IMS-match expected 200 (INM precedence), got %d", st);
+  }
+
+  // 7) If-None-Match wildcard => 304.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "If-None-Match: *\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 304)
+      die("conditional_304: INM wildcard expected 304, got %d", st);
+  }
+
+  // 8) HEAD with matching INM => 304.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    char req[512];
+    snprintf(req, sizeof(req),
+             "HEAD /index.html HTTP/1.1\r\n"
+             "Host: example.com\r\n"
+             "If-None-Match: %s\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             etag);
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 304)
+      die("conditional_304: HEAD INM match expected 304, got %d", st);
+  }
+
+  info("conditional_304: OK (8 sub-tests)");
+  return 0;
+}
+
 static void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s MODE [options]\n"
@@ -2312,6 +2572,7 @@ static void usage(const char *prog) {
           "  shutdown-keepalive-drains-pipeline [-H host] [-P port] [--nodelay] [-v]\n"
           "  shutdown-grace-timeout-forces-exit [-H host] [-P port] [--nodelay] [-v]\n"
           "  shutdown-second-signal-forces-immediate [-H host] [-P port] [--nodelay] [-v]\n"
+          "  conditional-304 [-H host] [-P port] [--nodelay] [-v]\n"
           "Options:\n"
           "  -H host       Default 127.0.0.1\n"
           "  -P port       Default 8090\n"
@@ -2539,6 +2800,10 @@ int main(int argc, char **argv) {
                                                         nodelay,
                                                         timeout_ms,
                                                         verbose);
+  }
+
+  if (!strcmp(mode, "conditional-304")) {
+    return test_conditional_304(host, port, nodelay, timeout_ms, verbose);
   }
 
   usage(argv[0]);
