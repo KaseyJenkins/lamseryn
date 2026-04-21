@@ -403,11 +403,17 @@ int worker_loop_try_handle_nonconn(struct worker_ctx *w,
       }
       // Keep wake poll armed in running and drain states.
       if (!pipe_closed) {
-        struct io_uring_sqe *sqe = get_sqe_batching(w);
+        int did_submit_w = 0;
+        struct io_uring_sqe *sqe = get_sqe_retry_once(&w->ring, &did_submit_w);
+        if (did_submit_w) {
+          CTR_INC_DEV(w, cnt_submit_inline);
+        }
         if (sqe) {
           io_uring_prep_poll_add(sqe, pipe_rd, POLLIN);
           io_uring_sqe_set_data64(sqe, (uint64_t)(uintptr_t)&w->wake_static);
           mark_post(w);
+        } else {
+          LOGE(LOGC_CORE, "OP_WAKE: failed to re-arm wake poll, shutdown signals may be lost");
         }
       } else if (pipe_closed) {
         w->cfg.wake_rd = -1;
@@ -431,11 +437,17 @@ int worker_loop_try_handle_nonconn(struct worker_ctx *w,
     ts.tv_sec = (time_t)(delta_ms / 1000);
     ts.tv_nsec = (long)((delta_ms % 1000) * 1000000);
 
-    struct io_uring_sqe *sqe_t = get_sqe_batching(w);
+    int did_submit_t = 0;
+    struct io_uring_sqe *sqe_t = get_sqe_retry_once(&w->ring, &did_submit_t);
+    if (did_submit_t) {
+      CTR_INC_DEV(w, cnt_submit_inline);
+    }
     if (sqe_t) {
       io_uring_prep_timeout(sqe_t, &ts, 0, 0);
       io_uring_sqe_set_data64(sqe_t, (uint64_t)(uintptr_t)&w->sweep_static);
       mark_post(w);
+    } else {
+      LOGE(LOGC_CORE, "OP_SWEEP: failed to re-arm sweep timer, timing wheel will stop");
     }
     maybe_flush(w, /*urgent=*/0);
     io_uring_cqe_seen(&w->ring, cqe);
