@@ -730,4 +730,7 @@ run_client echo-features-all --nodelay
 echo "[itest] running conditional 304 Not Modified (SERVER_FEATURES=all)" >&2
 run_client conditional-304 --nodelay
 
+echo "[itest] running range requests 206/416 (SERVER_FEATURES=all)" >&2
+run_client range-requests --nodelay
+
 echo "[itest] OK" >&2

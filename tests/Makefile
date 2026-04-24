@@ -68,6 +68,7 @@ TEST_BIN_TX             := $(BUILD)/test_tx_greatest
 TEST_BIN_ACCESS_LOG     := $(BUILD)/test_access_log_greatest
 TEST_BIN_CONN_LIFECYCLE := $(BUILD)/test_conn_lifecycle_greatest
 TEST_BIN_STATIC_304    := $(BUILD)/test_static_serve_304_greatest
+TEST_BIN_HTTP_RANGE    := $(BUILD)/test_http_range_greatest
 
 .PHONY: all
 all: $(TEST_BIN_REAL) \
@@ -91,7 +92,8 @@ all: $(TEST_BIN_REAL) \
 	$(TEST_BIN_TX) \
 	$(TEST_BIN_ACCESS_LOG) \
 	$(TEST_BIN_CONN_LIFECYCLE) \
-	$(TEST_BIN_STATIC_304)
+	$(TEST_BIN_STATIC_304) \
+	$(TEST_BIN_HTTP_RANGE)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -165,6 +167,9 @@ $(TEST_BIN_CONN_LIFECYCLE): unit/test_conn_lifecycle_greatest.c ../src/conn_life
 
 $(TEST_BIN_STATIC_304): unit/test_static_serve_304_greatest.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $<
+
+$(TEST_BIN_HTTP_RANGE): unit/test_http_range_greatest.c ../src/http_range.c | $(BUILD)
+	$(CC) $(CFLAGS) -I vendor -o $@ $^
 
 TESTS ?= $(wildcard $(BUILD)/test_*)
 TEST_FLAGS ?= -v

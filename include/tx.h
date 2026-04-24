@@ -67,7 +67,7 @@ int tx_build_headers(struct tx_state_t *tx,
                      const char **buf,
                      size_t *len);
 
-int tx_begin_sendfile(struct tx_state_t *tx, size_t file_size);
+int tx_begin_sendfile(struct tx_state_t *tx, off_t offset, size_t length);
 
 enum tx_decision tx_on_io_result(struct tx_state_t *tx,
                                  enum tx_io_kind kind,

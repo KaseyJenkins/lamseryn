@@ -171,13 +171,13 @@ int tx_build_headers(struct tx_state_t *tx,
   return 0;
 }
 
-int tx_begin_sendfile(struct tx_state_t *tx, size_t file_size) {
+int tx_begin_sendfile(struct tx_state_t *tx, off_t offset, size_t length) {
   if (!tx) {
     return -1;
   }
 
-  tx->file_rem = file_size;
-  tx->file_off = 0;
+  tx->file_rem = length;
+  tx->file_off = offset;
   return 0;
 }
 

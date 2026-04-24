@@ -470,7 +470,7 @@ static int read_one_response_buffered(int fd, int expected_status,
   static const char SEP[] = "\r\n\r\n";
   const size_t SEP_LEN = 4;
 
-  // 1) Read until end-of-headers
+  // Read through the full header block first.
   size_t hdr_end = (size_t)-1;
   for (;;) {
     if (hdr_end == (size_t)-1) {
@@ -499,7 +499,7 @@ static int read_one_response_buffered(int fd, int expected_status,
     g_len += (size_t)r;
   }
 
-  // 2) Parse status + Content-Length
+  // Parse status and Content-Length from the header bytes.
   size_t header_len = hdr_end;
 
   char header_tmp[64 * 1024 + 128];
@@ -529,7 +529,7 @@ static int read_one_response_buffered(int fd, int expected_status,
          parse_connection_is_close(header_tmp) ? "close" : "keep-alive");
   }
 
-  // 3) Ensure we have headers+body
+  // Pull body bytes until headers + Content-Length are present.
   size_t total_needed = header_len + (size_t)cl;
   while (g_len < total_needed) {
     if (g_len == sizeof(g_buf))
@@ -545,9 +545,9 @@ static int read_one_response_buffered(int fd, int expected_status,
     g_len += (size_t)r;
   }
 
-  // 3b) Content sanity checks are mode-specific; this helper only validates framing.
+  // Content checks are done by individual tests.
 
-  // 4) Preserve leftovers for next response
+  // Preserve pipelined bytes for the next response parse.
   size_t leftover = g_len - total_needed;
   if (leftover)
     memmove(g_buf, g_buf + total_needed, leftover);
@@ -558,8 +558,7 @@ static int read_one_response_buffered(int fd, int expected_status,
 
 static int read_one_response_body_once(int fd, int expected_status, int verbose,
                                        char **out_body, size_t *out_body_len) {
-  // Reads exactly one response and returns a malloc'd, NUL-terminated body.
-  // (Used for echo/introspection tests.)
+  // Read one response and return a malloc'd, NUL-terminated body.
   static const char SEP[] = "\r\n\r\n";
   const size_t SEP_LEN = 4;
 
@@ -568,7 +567,7 @@ static int read_one_response_body_once(int fd, int expected_status, int verbose,
   if (out_body_len)
     *out_body_len = 0;
 
-  // 1) Read until end-of-headers
+  // Read through the full header block first.
   size_t hdr_end = (size_t)-1;
   for (;;) {
     if (hdr_end == (size_t)-1) {
@@ -595,7 +594,7 @@ static int read_one_response_body_once(int fd, int expected_status, int verbose,
     g_len += (size_t)r;
   }
 
-  // 2) Parse status + Content-Length
+  // Parse status and Content-Length from the header bytes.
   size_t header_len = hdr_end;
 
   char header_tmp[64 * 1024 + 128];
@@ -624,7 +623,7 @@ static int read_one_response_body_once(int fd, int expected_status, int verbose,
          parse_connection_is_close(header_tmp) ? "close" : "keep-alive");
   }
 
-  // 3) Ensure we have headers+body
+  // Pull body bytes until headers + Content-Length are present.
   size_t total_needed = header_len + (size_t)cl;
   while (g_len < total_needed) {
     if (g_len == sizeof(g_buf))
@@ -640,7 +639,7 @@ static int read_one_response_body_once(int fd, int expected_status, int verbose,
     g_len += (size_t)r;
   }
 
-  // 4) Copy body out
+  // Copy out just the body.
   if (out_body) {
     char *b = (char *)malloc((size_t)cl + 1);
     if (!b)
@@ -653,7 +652,7 @@ static int read_one_response_body_once(int fd, int expected_status, int verbose,
   if (out_body_len)
     *out_body_len = (size_t)cl;
 
-  // For this helper, we expect the caller to close the socket; discard leftovers.
+  // Caller closes the socket; leftovers are intentionally dropped.
   g_len = 0;
   return 0;
 }
@@ -661,8 +660,7 @@ static int read_one_response_body_once(int fd, int expected_status, int verbose,
 static int read_one_response_head_buffered(int fd, int expected_status,
                                           int verbose, long *out_content_length,
                                           size_t *out_leftover) {
-  // Reads exactly one response HEAD-style: consume headers only, do NOT
-  // attempt to read a body (even if Content-Length is present).
+  // Read one HEAD response: consume headers only, never read a body.
   static const char SEP[] = "\r\n\r\n";
   const size_t SEP_LEN = 4;
 
@@ -671,7 +669,7 @@ static int read_one_response_head_buffered(int fd, int expected_status,
   if (out_leftover)
     *out_leftover = 0;
 
-  // 1) Read until end-of-headers
+  // Read through the full header block first.
   size_t hdr_end = (size_t)-1;
   for (;;) {
     if (hdr_end == (size_t)-1) {
@@ -700,7 +698,7 @@ static int read_one_response_head_buffered(int fd, int expected_status,
     g_len += (size_t)r;
   }
 
-  // 2) Parse status + Content-Length
+  // Parse status and Content-Length from the header bytes.
   size_t header_len = hdr_end;
 
   char header_tmp[64 * 1024 + 128];
@@ -730,7 +728,7 @@ static int read_one_response_head_buffered(int fd, int expected_status,
          parse_connection_is_close(header_tmp) ? "close" : "keep-alive");
   }
 
-  // 3) Consume only headers; preserve leftovers (should be 0 for correct HEAD)
+  // Consume only headers and keep any buffered leftovers.
   size_t total_needed = header_len;
   size_t leftover = g_len - total_needed;
   if (leftover)
@@ -747,9 +745,7 @@ static int read_one_response_discard_body(int fd, int expected_status,
                                          int verbose, long *out_content_length,
                                          char *out_static_mode,
                                          size_t out_static_mode_sz) {
-  // Reads exactly one response and drains (discards) the body bytes based on
-  // Content-Length. Designed for large responses where buffering the full body
-  // in g_buf is not feasible.
+  // Read one response and drain body bytes using Content-Length.
   static const char SEP[] = "\r\n\r\n";
   const size_t SEP_LEN = 4;
 
@@ -758,7 +754,7 @@ static int read_one_response_discard_body(int fd, int expected_status,
   if (out_static_mode && out_static_mode_sz)
     out_static_mode[0] = 0;
 
-  // 1) Read until end-of-headers
+  // Read through the full header block first.
   size_t hdr_end = (size_t)-1;
   for (;;) {
     if (hdr_end == (size_t)-1) {
@@ -786,7 +782,7 @@ static int read_one_response_discard_body(int fd, int expected_status,
     g_len += (size_t)r;
   }
 
-  // 2) Parse status + Content-Length
+  // Parse status and Content-Length from the header bytes.
   size_t header_len = hdr_end;
 
   char header_tmp[64 * 1024 + 128];
@@ -822,7 +818,7 @@ static int read_one_response_discard_body(int fd, int expected_status,
                                     out_static_mode, out_static_mode_sz);
   }
 
-  // 3) Drain body bytes.
+  // Drain body bytes.
   size_t already = (g_len > header_len) ? (g_len - header_len) : 0;
   size_t remaining = (size_t)cl;
   if (already >= remaining) {
@@ -2276,20 +2272,15 @@ static int test_shutdown_second_signal_forces_immediate(const char *host,
   return 0;
 }
 
-// ---------------------------------------------------------------------------
-// 304 Not Modified integration tests.
-// Requires the server to have CFG_FEAT_CONDITIONAL enabled (features=all).
-// ---------------------------------------------------------------------------
-
-// Helper: send a request, read one response, return status code.
-// Fills out_headers (NUL-terminated) and out_content_length.
+// Helpers for conditional/range integration tests.
+// Send one request, read one response, and return status code.
 static int send_and_read_status(int fd, const char *req, int verbose,
                                 char *out_headers, size_t out_headers_sz,
                                 long *out_cl) {
   if (send_all(fd, req, strlen(req)) < 0)
     return -1;
 
-  // Read until header end.
+  // Read through the full header block first.
   static const char SEP[] = "\r\n\r\n";
   const size_t SEP_LEN = 4;
   size_t hdr_end = (size_t)-1;
@@ -2316,7 +2307,7 @@ static int send_and_read_status(int fd, const char *req, int verbose,
     g_len += (size_t)r;
   }
 
-  // Copy headers.
+  // Copy headers to a NUL-terminated output buffer.
   size_t copy = hdr_end;
   if (copy > out_headers_sz - 1)
     copy = out_headers_sz - 1;
@@ -2331,7 +2322,7 @@ static int send_and_read_status(int fd, const char *req, int verbose,
   if (verbose)
     info("resp: status=%d cl=%ld", st, cl);
 
-  // Drain body.
+  // Drain body bytes before returning.
   size_t total_needed = hdr_end + (size_t)cl;
   while (g_len < total_needed) {
     if (g_len == sizeof(g_buf)) return -1;
@@ -2344,13 +2335,287 @@ static int send_and_read_status(int fd, const char *req, int verbose,
     g_len += (size_t)r;
   }
 
-  // Preserve leftovers for pipelined next response.
+  // Preserve pipelined leftovers for the next read.
   size_t leftover = g_len - total_needed;
   if (leftover)
     memmove(g_buf, g_buf + total_needed, leftover);
   g_len = leftover;
 
   return st;
+}
+
+// Variant that also copies response body bytes to out_body.
+static int send_and_read_with_body(int fd, const char *req, int verbose,
+                                   char *out_headers, size_t out_headers_sz,
+                                   long *out_cl,
+                                   char *out_body, size_t out_body_sz,
+                                   size_t *out_body_len) {
+  if (send_all(fd, req, strlen(req)) < 0)
+    return -1;
+
+  static const char SEP[] = "\r\n\r\n";
+  const size_t SEP_LEN = 4;
+  size_t hdr_end = (size_t)-1;
+
+  for (;;) {
+    if (hdr_end == (size_t)-1) {
+      for (size_t i = 0; i + SEP_LEN <= g_len; ++i) {
+        if (memcmp(g_buf + i, SEP, SEP_LEN) == 0) {
+          hdr_end = i + SEP_LEN;
+          break;
+        }
+      }
+    }
+    if (hdr_end != (size_t)-1)
+      break;
+    if (g_len == sizeof(g_buf))
+      return -1;
+    ssize_t r = recv(fd, g_buf + g_len, sizeof(g_buf) - g_len, 0);
+    if (r < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    if (r == 0) return -1;
+    g_len += (size_t)r;
+  }
+
+  size_t copy = hdr_end;
+  if (copy > out_headers_sz - 1)
+    copy = out_headers_sz - 1;
+  memcpy(out_headers, g_buf, copy);
+  out_headers[copy] = 0;
+
+  int st = parse_status_code(out_headers);
+  long cl = parse_content_length(out_headers);
+  if (cl < 0) cl = 0;
+  if (out_cl) *out_cl = cl;
+
+  if (verbose)
+    info("resp: status=%d cl=%ld", st, cl);
+
+  size_t total_needed = hdr_end + (size_t)cl;
+  while (g_len < total_needed) {
+    if (g_len == sizeof(g_buf)) return -1;
+    ssize_t r = recv(fd, g_buf + g_len, sizeof(g_buf) - g_len, 0);
+    if (r < 0) {
+      if (errno == EINTR) continue;
+      return -1;
+    }
+    if (r == 0) return -1;
+    g_len += (size_t)r;
+  }
+
+  // Copy body.
+  size_t body_len = (size_t)cl;
+  if (out_body && out_body_sz > 0) {
+    size_t bcopy = body_len < out_body_sz - 1 ? body_len : out_body_sz - 1;
+    memcpy(out_body, g_buf + hdr_end, bcopy);
+    out_body[bcopy] = 0;
+    if (out_body_len) *out_body_len = bcopy;
+  }
+
+  size_t leftover = g_len - total_needed;
+  if (leftover)
+    memmove(g_buf, g_buf + total_needed, leftover);
+  g_len = leftover;
+
+  return st;
+}
+
+// Range request integration tests (requires features=all).
+static int test_range_requests(const char *host, const char *port,
+                               int nodelay, int timeout_ms, int verbose) {
+  // Capture baseline body bytes and ETag for follow-up checks.
+  char full_body[16384];
+  size_t full_body_len = 0;
+  long full_cl = 0;
+  char etag[128];
+  etag[0] = 0;
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &full_cl, full_body, sizeof(full_body),
+                                     &full_body_len);
+    close(fd);
+    if (st != 200)
+      die("range: initial GET expected 200, got %d", st);
+    if (full_cl <= 10)
+      die("range: need file > 10 bytes for range tests, got cl=%ld", full_cl);
+    if (parse_header_value_simple(hdrs, "ETag", etag, sizeof(etag)) != 0)
+      die("range: initial GET missing ETag header");
+    // 200 on a range-enabled vhost must advertise Accept-Ranges.
+    char ar[64];
+    if (parse_header_value_simple(hdrs, "Accept-Ranges", ar, sizeof(ar)) != 0)
+      die("range: initial 200 missing Accept-Ranges header");
+    if (strcmp(ar, "bytes") != 0)
+      die("range: initial 200 Accept-Ranges expected 'bytes', got '%s'", ar);
+    if (verbose)
+      info("range: captured %zu body bytes, ETag=%s", full_body_len, etag);
+  }
+
+  // Satisfiable single range should return 206.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Range: bytes=0-4\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    char body[256];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+    if (st != 206)
+      die("range: bytes=0-4 expected 206, got %d", st);
+    if (cl != 5)
+      die("range: bytes=0-4 expected Content-Length 5, got %ld", cl);
+    if (body_len != 5 || memcmp(body, full_body, 5) != 0)
+      die("range: bytes=0-4 body mismatch");
+    // Verify Content-Range header.
+    char cr[128];
+    if (parse_header_value_simple(hdrs, "Content-Range", cr, sizeof(cr)) != 0)
+      die("range: 206 missing Content-Range header");
+    char expected_cr[128];
+    snprintf(expected_cr, sizeof(expected_cr), "bytes 0-4/%ld", full_cl);
+    if (strcmp(cr, expected_cr) != 0)
+      die("range: Content-Range expected '%s', got '%s'", expected_cr, cr);
+    // Must include ETag.
+    char etag206[128];
+    if (parse_header_value_simple(hdrs, "ETag", etag206, sizeof(etag206)) != 0)
+      die("range: 206 missing ETag header");
+    // 206 must also carry Accept-Ranges.
+    char ar206[64];
+    if (parse_header_value_simple(hdrs, "Accept-Ranges", ar206, sizeof(ar206)) != 0)
+      die("range: 206 missing Accept-Ranges header");
+    if (strcmp(ar206, "bytes") != 0)
+      die("range: 206 Accept-Ranges expected 'bytes', got '%s'", ar206);
+  }
+
+  // Unsatisfiable range should return 416 with bytes */total.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    char req[512];
+    snprintf(req, sizeof(req),
+             "GET /index.html HTTP/1.1\r\n"
+             "Host: example.com\r\n"
+             "Range: bytes=%ld-\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             full_cl + 1000);
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 416)
+      die("range: unsatisfiable expected 416, got %d", st);
+    if (cl != 0)
+      die("range: 416 expected Content-Length 0, got %ld", cl);
+    char cr[128];
+    if (parse_header_value_simple(hdrs, "Content-Range", cr, sizeof(cr)) != 0)
+      die("range: 416 missing Content-Range header");
+    char expected_cr[128];
+    snprintf(expected_cr, sizeof(expected_cr), "bytes */%ld", full_cl);
+    if (strcmp(cr, expected_cr) != 0)
+      die("range: 416 Content-Range expected '%s', got '%s'", expected_cr, cr);
+  }
+
+  // Invalid range syntax falls back to full 200 response.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Range: bytes=abc-def\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("range: invalid syntax expected 200, got %d", st);
+    if (cl != full_cl)
+      die("range: invalid syntax expected full cl=%ld, got %ld", full_cl, cl);
+  }
+
+  // Multi-range is unsupported and falls back to full 200 response.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Range: bytes=0-1, 3-4\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("range: multi-range expected 200, got %d", st);
+  }
+
+  // Matching If-Range should apply the range.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    char req[512];
+    snprintf(req, sizeof(req),
+             "GET /index.html HTTP/1.1\r\n"
+             "Host: example.com\r\n"
+             "Range: bytes=0-4\r\n"
+             "If-Range: %s\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             etag);
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 206)
+      die("range: If-Range match expected 206, got %d", st);
+    if (cl != 5)
+      die("range: If-Range match expected cl=5, got %ld", cl);
+  }
+
+  // Non-matching If-Range should ignore the range.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Range: bytes=0-4\r\n"
+        "If-Range: \"stale-etag\"\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[8192];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("range: If-Range mismatch expected 200, got %d", st);
+    if (cl != full_cl)
+      die("range: If-Range mismatch expected full cl=%ld, got %ld", full_cl, cl);
+  }
+
+  info("range_requests: OK (7 sub-tests)");
+  return 0;
 }
 
 static int test_conditional_304(const char *host, const char *port,
@@ -2360,7 +2625,7 @@ static int test_conditional_304(const char *host, const char *port,
   etag[0] = 0;
   last_mod[0] = 0;
 
-  // 1) Initial GET to capture ETag and Last-Modified.
+  // Capture baseline ETag and Last-Modified.
   {
     g_len = 0;
     int fd = connect_tcp(host, port, nodelay, timeout_ms);
@@ -2386,7 +2651,7 @@ static int test_conditional_304(const char *host, const char *port,
       info("captured ETag=%s Last-Modified=%s", etag, last_mod);
   }
 
-  // 2) If-None-Match with matching ETag => 304.
+  // Matching If-None-Match should return 304.
   {
     g_len = 0;
     int fd = connect_tcp(host, port, nodelay, timeout_ms);
@@ -2416,7 +2681,7 @@ static int test_conditional_304(const char *host, const char *port,
       die("conditional_304: 304 must not include Content-Type");
   }
 
-  // 3) If-None-Match with non-matching ETag => 200.
+  // Non-matching If-None-Match should return 200.
   {
     g_len = 0;
     int fd = connect_tcp(host, port, nodelay, timeout_ms);
@@ -2436,7 +2701,7 @@ static int test_conditional_304(const char *host, const char *port,
       die("conditional_304: 200 response must have body");
   }
 
-  // 4) If-Modified-Since with matching date => 304.
+  // Matching If-Modified-Since should return 304.
   {
     g_len = 0;
     int fd = connect_tcp(host, port, nodelay, timeout_ms);
@@ -2457,7 +2722,7 @@ static int test_conditional_304(const char *host, const char *port,
       die("conditional_304: 304 response must have no body (IMS), got cl=%ld", cl);
   }
 
-  // 5) If-Modified-Since with old date => 200.
+  // Old If-Modified-Since date should return 200.
   {
     g_len = 0;
     int fd = connect_tcp(host, port, nodelay, timeout_ms);
@@ -2475,7 +2740,7 @@ static int test_conditional_304(const char *host, const char *port,
       die("conditional_304: IMS epoch expected 200, got %d", st);
   }
 
-  // 6) INM no-match blocks IMS fallback (RFC 7232 §6 precedence).
+  // If-None-Match takes precedence over If-Modified-Since.
   {
     g_len = 0;
     int fd = connect_tcp(host, port, nodelay, timeout_ms);
@@ -2494,7 +2759,7 @@ static int test_conditional_304(const char *host, const char *port,
       die("conditional_304: INM-no-match+IMS-match expected 200 (INM precedence), got %d", st);
   }
 
-  // 7) If-None-Match wildcard => 304.
+  // If-None-Match wildcard should return 304.
   {
     g_len = 0;
     int fd = connect_tcp(host, port, nodelay, timeout_ms);
@@ -2512,7 +2777,7 @@ static int test_conditional_304(const char *host, const char *port,
       die("conditional_304: INM wildcard expected 304, got %d", st);
   }
 
-  // 8) HEAD with matching INM => 304.
+  // HEAD with matching If-None-Match should return 304.
   {
     g_len = 0;
     int fd = connect_tcp(host, port, nodelay, timeout_ms);
@@ -2573,6 +2838,7 @@ static void usage(const char *prog) {
           "  shutdown-grace-timeout-forces-exit [-H host] [-P port] [--nodelay] [-v]\n"
           "  shutdown-second-signal-forces-immediate [-H host] [-P port] [--nodelay] [-v]\n"
           "  conditional-304 [-H host] [-P port] [--nodelay] [-v]\n"
+          "  range-requests [-H host] [-P port] [--nodelay] [-v]\n"
           "Options:\n"
           "  -H host       Default 127.0.0.1\n"
           "  -P port       Default 8090\n"
@@ -2804,6 +3070,10 @@ int main(int argc, char **argv) {
 
   if (!strcmp(mode, "conditional-304")) {
     return test_conditional_304(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "range-requests")) {
+    return test_range_requests(host, port, nodelay, timeout_ms, verbose);
   }
 
   usage(argv[0]);

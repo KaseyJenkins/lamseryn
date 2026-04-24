@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -12,6 +13,7 @@
 
 #include "include/conn.h"
 #include "include/http_headers.h"
+#include "include/http_range.h"
 #include "include/request_handlers.h"
 #include "include/static_serve_utils.h"
 #include "include/tx.h"
@@ -188,7 +190,7 @@ int static_serve_openat_beneath_nofollow(int root_dirfd, const char *relpath) {
 }
 
 // ---------------------------------------------------------------------------
-// Conditional-request (304 Not Modified) helpers.
+// Conditional request helpers (304 Not Modified).
 // ---------------------------------------------------------------------------
 
 // Produces a strong-looking quoted ETag: "inode-size-mtimeUs".
@@ -199,10 +201,10 @@ static size_t static_serve_format_etag(char *buf, size_t cap, const struct stat 
   }
   uint64_t mtime_us =
     (uint64_t)st->st_mtim.tv_sec * 1000000ULL + (uint64_t)(st->st_mtim.tv_nsec / 1000);
-  int n = snprintf(buf, cap, "\"%llx-%llx-%llx\"",
-                   (unsigned long long)st->st_ino,
-                   (unsigned long long)st->st_size,
-                   (unsigned long long)mtime_us);
+  int n = snprintf(buf, cap, "\"%" PRIx64 "-" "%" PRIx64 "-" "%" PRIx64 "\"",
+                   (uint64_t)st->st_ino,
+                   (uint64_t)st->st_size,
+                   mtime_us);
   if (n <= 0 || (size_t)n >= cap) {
     return 0;
   }
@@ -284,7 +286,7 @@ static int static_serve_parse_http_date(const char *str, time_t *out) {
   if (p[0] < '0' || p[0] > '9' || p[1] < '0' || p[1] > '9' || p[2] != ':' ||
       p[3] < '0' || p[3] > '9' || p[4] < '0' || p[4] > '9' || p[5] != ':' ||
       p[6] < '0' || p[6] > '9' || p[7] < '0' || p[7] > '9' ||
-      p[8] != ' ' || p[9] != 'G' || p[10] != 'M' || p[11] != 'T') {
+      p[8] != ' ' || p[9] != 'G' || p[10] != 'M' || p[11] != 'T' || p[12] != '\0') {
     return -1;
   }
   int hour = (p[0]-'0')*10 + (p[1]-'0');
@@ -407,6 +409,58 @@ static size_t static_serve_build_validator_headers(char *buf,
   return (size_t)n;
 }
 
+// Evaluate If-Range (RFC 7233 §3.2).
+// Returns 1 to apply Range, 0 to ignore Range and serve full entity.
+static int static_serve_if_range_matches(const struct conn *c,
+                                         const struct stat *st,
+                                         const char *etag,
+                                         size_t etag_len) {
+  if (!c) {
+    return 1; // no request headers
+  }
+
+  uint16_t ir_len = 0;
+  const char *ir =
+    http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_IF_RANGE, &ir_len);
+  if (!ir || ir_len == 0) {
+    return 1; // no If-Range header
+  }
+
+  // Quoted value: strong ETag comparison.
+  if (ir_len >= 2 && ir[0] == '"') {
+    // RFC 7233 §3.2: If-Range with ETag uses strong comparison.
+    // Weak ETags do not satisfy If-Range.
+    if (etag && etag_len > 0 && ir_len == (uint16_t)etag_len
+        && memcmp(ir, etag, etag_len) == 0) {
+      return 1;
+    }
+    return 0;
+  }
+
+  // Weak ETags never satisfy If-Range.
+  if (ir_len >= 2 && ir[0] == 'W' && ir[1] == '/') {
+    return 0;
+  }
+
+  // Otherwise treat value as HTTP-date.
+  if (st) {
+    // Parse helper needs a NUL-terminated buffer.
+    char date_buf[64];
+    size_t copy_len = ir_len < sizeof(date_buf) - 1 ? ir_len : sizeof(date_buf) - 1;
+    memcpy(date_buf, ir, copy_len);
+    date_buf[copy_len] = '\0';
+
+    time_t ir_time;
+    if (static_serve_parse_http_date(date_buf, &ir_time) == 0) {
+      if (st->st_mtim.tv_sec == ir_time) {
+        return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
 int static_serve_tx_set_dynamic_response_ex(struct conn *c,
                                             const char *status_line,
                                             const char *content_type,
@@ -499,6 +553,15 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
     }
 
     const struct vhost_t *vh = c->vhost;
+    if (vh && (vh->features & CFG_FEAT_RANGE) && vhdr_len > 0) {
+      static const char ar[] = "Accept-Ranges: bytes\r\n";
+      size_t ar_len = sizeof(ar) - 1;
+      if (vhdr_len + ar_len < sizeof(validator_hdrs)) {
+        memcpy(validator_hdrs + vhdr_len, ar, ar_len);
+        vhdr_len += ar_len;
+        validator_hdrs[vhdr_len] = '\0';
+      }
+    }
     if (vh && (vh->features & CFG_FEAT_CONDITIONAL)
         && (c->h1.method == HTTP_GET || c->h1.method == HTTP_HEAD)
         && etag_len > 0) {
@@ -533,6 +596,179 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
         }
         // If header build failed, fall through to normal close-fd path below.
         goto done;
+      }
+    }
+
+    // Range handling runs after 304 checks and only for GET.
+    if (vh && (vh->features & CFG_FEAT_RANGE) && c->h1.method == HTTP_GET) {
+      uint16_t range_hdr_len = 0;
+      const char *range_hdr =
+        http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_RANGE, &range_hdr_len);
+      if (range_hdr && range_hdr_len > 0) {
+        struct byte_range br = http_range_parse(range_hdr, range_hdr_len);
+        if (br.valid) {
+          // Apply range only when If-Range matches.
+          int apply_range = static_serve_if_range_matches(c, &st, etag_buf, etag_len);
+          if (apply_range) {
+            struct resolved_range rr = http_range_resolve(&br, (uint64_t)fsz);
+            if (!rr.satisfiable) {
+              close(fd);
+              fd = -1;
+              char cr_buf[128];
+              size_t cr_len = http_range_format_content_range_unsatisfied(
+                cr_buf, sizeof(cr_buf), (uint64_t)fsz);
+              // Return 416 with Content-Range, Content-Length: 0, and validators.
+              char extra_416[512];
+              int elen = snprintf(extra_416, sizeof(extra_416),
+                                  "%.*sContent-Length: 0\r\n%s",
+                                  (int)cr_len, cr_buf, validator_hdrs);
+              if (elen <= 0 || (size_t)elen >= sizeof(extra_416)) {
+                goto done;
+              }
+              const char *buf_416 = NULL;
+              size_t len_416 = 0;
+              if (tx_build_headers(&c->tx,
+                                   "416 Range Not Satisfiable",
+                                   /*content_type=*/NULL,
+                                   /*content_len=*/0,
+                                   /*body=*/NULL,
+                                   /*body_send_len=*/0,
+                                   keep,
+                                   /*drain_after_headers=*/0,
+                                   extra_416,
+                                   &buf_416,
+                                   &len_416)
+                  == 0) {
+                struct tx_next_io out416 = {0};
+                (void)tx_begin_headers(&c->tx,
+                                       RK_416,
+                                       buf_416,
+                                       len_416,
+                                       keep,
+                                       /*drain_after_headers=*/0,
+                                       &out416);
+                return 1;
+              }
+              goto done;
+            }
+
+            char cr_buf[128];
+            size_t cr_len = http_range_format_content_range(
+              cr_buf, sizeof(cr_buf), rr.start, rr.end, (uint64_t)fsz);
+            // Build extra headers for 206.
+            char extra_206[512];
+            int elen = snprintf(extra_206, sizeof(extra_206), "%.*s%s",
+                                (int)cr_len, cr_buf, validator_hdrs);
+            if (elen <= 0 || (size_t)elen >= sizeof(extra_206)) {
+              goto done;
+            }
+
+            struct request_static_serve_plan rs = request_build_static_serve_plan(c, (size_t)rr.length);
+            enum request_static_serve_mode rmode = rs.mode;
+            if (c->tls_enabled && rmode == REQUEST_STATIC_SERVE_SENDFILE) {
+              rmode = REQUEST_STATIC_SERVE_BUFFERED;
+            }
+
+            if (rmode == REQUEST_STATIC_SERVE_BUFFERED && rr.length <= (uint64_t)SIZE_MAX) {
+              size_t range_len = (size_t)rr.length;
+              char *rbuf = (char *)malloc(range_len);
+              if (rbuf) {
+                if (lseek(fd, (off_t)rr.start, SEEK_SET) != (off_t)-1) {
+                  size_t got = 0;
+                  while (got < range_len) {
+                    ssize_t r = read(fd, rbuf + got, range_len - got);
+                    if (r < 0) {
+                      if (errno == EINTR) continue;
+                      break;
+                    }
+                    if (r == 0) break;
+                    got += (size_t)r;
+                  }
+                  close(fd);
+                  fd = -1;
+                  if (got == range_len) {
+                    const char *buf_206 = NULL;
+                    size_t len_206 = 0;
+                    if (tx_build_headers(&c->tx,
+                                         "206 Partial Content",
+                                         ctype,
+                                         range_len,
+                                         rbuf,
+                                         range_len,
+                                         keep,
+                                         /*drain_after_headers=*/0,
+                                         extra_206,
+                                         &buf_206,
+                                         &len_206)
+                        == 0) {
+                      struct tx_next_io out206 = {0};
+                      (void)tx_begin_headers(&c->tx,
+                                             RK_206,
+                                             buf_206,
+                                             len_206,
+                                             keep,
+                                             /*drain_after_headers=*/0,
+                                             &out206);
+                      free(rbuf);
+                      return 1;
+                    }
+                  }
+                }
+                free(rbuf);
+              }
+              // TLS cannot fall back to kernel sendfile.
+              if (c->tls_enabled) {
+                goto done;
+              }
+              // Non-TLS can retry with sendfile.
+              if (fd < 0) {
+                fd = static_serve_openat_beneath_nofollow(docroot_fd, relpath);
+                if (fd < 0) {
+                  *static_open_err = request_static_open_err_merge(*static_open_err, errno);
+                  goto done;
+                }
+              }
+            }
+
+            // Sendfile path for 206.
+            if (fd >= 0) {
+              const char *buf_206 = NULL;
+              size_t len_206 = 0;
+              if (tx_build_headers(&c->tx,
+                                   "206 Partial Content",
+                                   ctype,
+                                   (size_t)rr.length,
+                                   /*body=*/NULL,
+                                   /*body_send_len=*/0,
+                                   keep,
+                                   /*drain_after_headers=*/0,
+                                   extra_206,
+                                   &buf_206,
+                                   &len_206)
+                  == 0) {
+                struct tx_next_io out206 = {0};
+                (void)tx_begin_headers(&c->tx,
+                                       RK_206,
+                                       buf_206,
+                                       len_206,
+                                       keep,
+                                       /*drain_after_headers=*/0,
+                                       &out206);
+                if (c->tx.file_fd >= 0) {
+                  close(c->tx.file_fd);
+                  c->tx.file_fd = -1;
+                }
+                c->tx.file_fd = fd;
+                (void)tx_begin_sendfile(&c->tx, (off_t)rr.start, (size_t)rr.length);
+                fd = -1;
+                return 1;
+              }
+            }
+            goto done;
+          }
+          // If-Range mismatch: serve normal 200.
+        }
+        // Invalid or multi-range: serve normal 200.
       }
     }
 
@@ -589,6 +825,11 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
         free(file_buf);
       }
 
+      // TLS cannot fall back to kernel sendfile.
+      if (c->tls_enabled) {
+        goto done;
+      }
+      // Non-TLS can reopen and continue with sendfile.
       fd = static_serve_openat_beneath_nofollow(docroot_fd, relpath);
       if (fd < 0) {
         *static_open_err = request_static_open_err_merge(*static_open_err, errno);
@@ -614,7 +855,7 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
         }
         if (fsz > 0) {
           c->tx.file_fd = fd;
-          (void)tx_begin_sendfile(&c->tx, fsz);
+          (void)tx_begin_sendfile(&c->tx, 0, fsz);
           fd = -1;
         } else {
           close(fd);

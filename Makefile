@@ -2,7 +2,7 @@
 
 APP        := lamseryn
 APP_GATES  := $(APP)_gates
-SRC        := lamseryn.c src/net_server.c src/http_parser.c src/http_pipeline.c src/http_boundary.c src/request_handlers.c src/conn_store.c src/buffer_pool.c src/accept_controller.c src/timing_wheel.c src/url.c src/http_headers.c src/http1_limits.c src/req_arena_stats.c src/tx.c src/rx_stash.c src/rx_buffers.c src/conn_deadline.c src/worker_loop.c src/static_serve_utils.c src/conn_lifecycle.c
+SRC        := lamseryn.c src/net_server.c src/http_parser.c src/http_pipeline.c src/http_boundary.c src/request_handlers.c src/conn_store.c src/buffer_pool.c src/accept_controller.c src/timing_wheel.c src/url.c src/http_headers.c src/http1_limits.c src/req_arena_stats.c src/tx.c src/rx_stash.c src/rx_buffers.c src/conn_deadline.c src/worker_loop.c src/static_serve_utils.c src/conn_lifecycle.c src/http_range.c
 SRC       += src/config_ini.c
 SRC       += src/access_log.c
 SRC       += src/tls.c

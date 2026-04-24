@@ -53,8 +53,8 @@ int tx_build_headers(struct tx_state_t *tx, const char *s, const char *ct,
   return -1;
 }
 
-int tx_begin_sendfile(struct tx_state_t *tx, size_t sz) {
-  (void)tx; (void)sz;
+int tx_begin_sendfile(struct tx_state_t *tx, off_t off, size_t sz) {
+  (void)tx; (void)off; (void)sz;
   return 0;
 }
 
@@ -237,6 +237,13 @@ TEST t_parse_date_missing_gmt(void) {
   time_t out;
   ASSERT_EQ(static_serve_parse_http_date("Sun, 06 Nov 1994 08:49:37 UTC", &out), -1);
   ASSERT_EQ(static_serve_parse_http_date("Sun, 06 Nov 1994 08:49:37 EST", &out), -1);
+  PASS();
+}
+
+TEST t_parse_date_trailing_garbage(void) {
+  time_t out;
+  ASSERT_EQ(static_serve_parse_http_date("Sun, 06 Nov 1994 08:49:37 GMTextra", &out), -1);
+  ASSERT_EQ(static_serve_parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT ", &out), -1);
   PASS();
 }
 
@@ -462,6 +469,7 @@ SUITE(s_parse_http_date) {
   RUN_TEST(t_parse_date_empty_string);
   RUN_TEST(t_parse_date_short_string);
   RUN_TEST(t_parse_date_missing_gmt);
+  RUN_TEST(t_parse_date_trailing_garbage);
   RUN_TEST(t_parse_date_bad_month);
   RUN_TEST(t_parse_date_out_of_range_hour);
   RUN_TEST(t_parse_date_out_of_range_minute);
