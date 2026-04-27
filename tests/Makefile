@@ -69,6 +69,8 @@ TEST_BIN_ACCESS_LOG     := $(BUILD)/test_access_log_greatest
 TEST_BIN_CONN_LIFECYCLE := $(BUILD)/test_conn_lifecycle_greatest
 TEST_BIN_STATIC_304    := $(BUILD)/test_static_serve_304_greatest
 TEST_BIN_HTTP_RANGE    := $(BUILD)/test_http_range_greatest
+TEST_BIN_COMPRESSION   := $(BUILD)/test_compression_greatest
+TEST_BIN_STATIC_HDRS  := $(BUILD)/test_static_serve_headers_greatest
 
 .PHONY: all
 all: $(TEST_BIN_REAL) \
@@ -93,7 +95,9 @@ all: $(TEST_BIN_REAL) \
 	$(TEST_BIN_ACCESS_LOG) \
 	$(TEST_BIN_CONN_LIFECYCLE) \
 	$(TEST_BIN_STATIC_304) \
-	$(TEST_BIN_HTTP_RANGE)
+	$(TEST_BIN_HTTP_RANGE) \
+	$(TEST_BIN_COMPRESSION) \
+	$(TEST_BIN_STATIC_HDRS)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -165,10 +169,16 @@ $(TEST_BIN_ACCESS_LOG): unit/test_access_log_greatest.c ../src/access_log.c ../s
 $(TEST_BIN_CONN_LIFECYCLE): unit/test_conn_lifecycle_greatest.c ../src/conn_lifecycle.c ../src/conn_store.c ../src/req_arena_stats.c ../src/logger.c $(LIBURING_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
-$(TEST_BIN_STATIC_304): unit/test_static_serve_304_greatest.c | $(BUILD)
-	$(CC) $(CFLAGS) -I vendor -o $@ $<
+$(TEST_BIN_STATIC_304): unit/test_static_serve_304_greatest.c ../src/compression.c | $(BUILD)
+	$(CC) $(CFLAGS) -I vendor -o $@ $^
 
 $(TEST_BIN_HTTP_RANGE): unit/test_http_range_greatest.c ../src/http_range.c | $(BUILD)
+	$(CC) $(CFLAGS) -I vendor -o $@ $^
+
+$(TEST_BIN_COMPRESSION): unit/test_compression_greatest.c ../src/compression.c | $(BUILD)
+	$(CC) $(CFLAGS) -I vendor -o $@ $^
+
+$(TEST_BIN_STATIC_HDRS): unit/test_static_serve_headers_greatest.c ../src/compression.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^
 
 TESTS ?= $(wildcard $(BUILD)/test_*)

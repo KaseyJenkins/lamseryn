@@ -2801,6 +2801,253 @@ static int test_conditional_304(const char *host, const char *port,
   return 0;
 }
 
+static int test_precompressed(const char *host, const char *port,
+                              int nodelay, int timeout_ms, int verbose) {
+  // gzip variant: Accept-Encoding: gzip and .gz sibling present.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /comp.css HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Accept-Encoding: gzip\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    char body[256];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+    if (st != 200)
+      die("precompressed: gzip variant expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) != 0)
+      die("precompressed: gzip variant missing Content-Encoding header");
+    if (strcmp(ce, "gzip") != 0)
+      die("precompressed: gzip variant expected Content-Encoding gzip, got '%s'", ce);
+    char vary[64];
+    if (parse_header_value_simple(hdrs, "Vary", vary, sizeof(vary)) != 0)
+      die("precompressed: gzip variant missing Vary header");
+    if (strcmp(vary, "Accept-Encoding") != 0)
+      die("precompressed: gzip variant expected Vary: Accept-Encoding, got '%s'", vary);
+    char ct[128];
+    if (parse_header_value_simple(hdrs, "Content-Type", ct, sizeof(ct)) != 0)
+      die("precompressed: gzip variant missing Content-Type header");
+    if (strncmp(ct, "text/css", 8) != 0)
+      die("precompressed: gzip variant expected text/css Content-Type, got '%s'", ct);
+    if (cl <= 0 || (size_t)cl != body_len)
+      die("precompressed: gzip variant Content-Length %ld doesn't match body %zu", cl, body_len);
+    if (verbose)
+      info("precompressed: gzip variant Content-Length=%ld CE=%s", cl, ce);
+  }
+
+  // brotli variant: Accept-Encoding: br and .br sibling present.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /comp.css HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Accept-Encoding: br\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    char body[256];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+    if (st != 200)
+      die("precompressed: brotli variant expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) != 0)
+      die("precompressed: brotli variant missing Content-Encoding header");
+    if (strcmp(ce, "br") != 0)
+      die("precompressed: brotli variant expected Content-Encoding br, got '%s'", ce);
+    char vary[64];
+    if (parse_header_value_simple(hdrs, "Vary", vary, sizeof(vary)) != 0)
+      die("precompressed: brotli variant missing Vary header");
+    if (strcmp(vary, "Accept-Encoding") != 0)
+      die("precompressed: brotli variant expected Vary: Accept-Encoding, got '%s'", vary);
+    if (cl <= 0 || (size_t)cl != body_len)
+      die("precompressed: brotli variant Content-Length mismatch");
+    if (verbose)
+      info("precompressed: brotli variant Content-Length=%ld CE=%s", cl, ce);
+  }
+
+  // brotli preference when client accepts both gzip and brotli.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /comp.css HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Accept-Encoding: gzip, br\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("precompressed: brotli-prefer expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) != 0)
+      die("precompressed: brotli-prefer missing Content-Encoding header");
+    if (strcmp(ce, "br") != 0)
+      die("precompressed: brotli-prefer expected br encoding, got '%s'", ce);
+    if (verbose)
+      info("precompressed: brotli preferred over gzip: CE=%s", ce);
+  }
+
+  // identity response when no Accept-Encoding is sent.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /comp.css HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    char body[256];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+    if (st != 200)
+      die("precompressed: identity expected 200, got %d", st);
+    // No Content-Encoding should be present.
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) == 0)
+      die("precompressed: identity unexpectedly got Content-Encoding: %s", ce);
+    // Vary: Accept-Encoding must still be present on compressible types even
+    // when the response is identity — prevents cache poisoning.
+    char vary[64];
+    if (parse_header_value_simple(hdrs, "Vary", vary, sizeof(vary)) != 0)
+      die("precompressed: identity response missing Vary header");
+    if (strcmp(vary, "Accept-Encoding") != 0)
+      die("precompressed: identity Vary expected 'Accept-Encoding', got '%s'", vary);
+    if (cl <= 0 || (size_t)cl != body_len)
+      die("precompressed: identity Content-Length mismatch");
+    if (verbose)
+      info("precompressed: identity response: Content-Length=%ld", cl);
+  }
+
+  // non-compressible MIME type bypasses precompressed probe.
+  // nocomp.png + nocomp.png.gz both exist; PNG is not compressible so the
+  // server must serve the original PNG without Content-Encoding.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /nocomp.png HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Accept-Encoding: gzip\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("precompressed: non-compressible PNG expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) == 0)
+      die("precompressed: non-compressible PNG got unexpected Content-Encoding: %s", ce);
+    // Non-compressible types must not carry Vary: Accept-Encoding.
+    char vary[64];
+    if (parse_header_value_simple(hdrs, "Vary", vary, sizeof(vary)) == 0)
+      die("precompressed: non-compressible PNG got unexpected Vary: %s", vary);
+    if (verbose)
+      info("precompressed: non-compressible PNG correctly served without Content-Encoding");
+  }
+
+  // Range request bypasses precompressed probe.
+  // With both Range and Accept-Encoding: gzip, the server must serve the
+  // original file as a 206 with no Content-Encoding.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "GET /comp.css HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Range: bytes=0-3\r\n"
+        "Accept-Encoding: gzip\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    char body[64];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+    if (st != 206)
+      die("precompressed: range-bypass expected 206, got %d", st);
+    if (cl != 4)
+      die("precompressed: range-bypass expected Content-Length 4, got %ld", cl);
+    // Must not send Content-Encoding on the range response.
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) == 0)
+      die("precompressed: range-bypass got unexpected Content-Encoding: %s", ce);
+    if (verbose)
+      info("precompressed: range-bypass 206 correctly served without Content-Encoding");
+  }
+
+  // HEAD request advertises compressed variant headers.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+        "HEAD /comp.css HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Accept-Encoding: gzip\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    if (send_all(fd, req, strlen(req)) < 0) {
+      close(fd);
+      die("precompressed: HEAD gzip send failed");
+    }
+    // HEAD + Connection: close: server sends headers then closes. Read until EOF.
+    char raw[4096];
+    size_t raw_len = 0;
+    for (;;) {
+      ssize_t r = recv(fd, raw + raw_len, sizeof(raw) - 1 - raw_len, 0);
+      if (r < 0) {
+        if (errno == EINTR) { continue; }
+        close(fd);
+        die("precompressed: HEAD gzip recv error");
+      }
+      if (r == 0) { break; }
+      raw_len += (size_t)r;
+      if (raw_len >= sizeof(raw) - 1) { break; }
+    }
+    close(fd);
+    raw[raw_len] = '\0';
+    int st = parse_status_code(raw);
+    if (st != 200)
+      die("precompressed: HEAD gzip expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(raw, "Content-Encoding", ce, sizeof(ce)) != 0)
+      die("precompressed: HEAD gzip missing Content-Encoding header");
+    if (strcmp(ce, "gzip") != 0)
+      die("precompressed: HEAD gzip expected Content-Encoding gzip, got '%s'", ce);
+    long cl = parse_content_length(raw);
+    if (cl <= 0)
+      die("precompressed: HEAD gzip missing positive Content-Length");
+    if (verbose)
+      info("precompressed: HEAD gzip Content-Length=%ld CE=%s", cl, ce);
+  }
+
+  info("precompressed: OK (7 sub-tests)");
+  return 0;
+}
+
 static void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s MODE [options]\n"
@@ -2839,6 +3086,7 @@ static void usage(const char *prog) {
           "  shutdown-second-signal-forces-immediate [-H host] [-P port] [--nodelay] [-v]\n"
           "  conditional-304 [-H host] [-P port] [--nodelay] [-v]\n"
           "  range-requests [-H host] [-P port] [--nodelay] [-v]\n"
+          "  precompressed [-H host] [-P port] [--nodelay] [-v]\n"
           "Options:\n"
           "  -H host       Default 127.0.0.1\n"
           "  -P port       Default 8090\n"
@@ -3074,6 +3322,10 @@ int main(int argc, char **argv) {
 
   if (!strcmp(mode, "range-requests")) {
     return test_range_requests(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "precompressed")) {
+    return test_precompressed(host, port, nodelay, timeout_ms, verbose);
   }
 
   usage(argv[0]);

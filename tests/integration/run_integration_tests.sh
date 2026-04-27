@@ -104,6 +104,14 @@ cp "$DOCROOT_SRC/index.html" "$DOCROOT/index.html"
 BIG_BYTES=524288
 dd if=/dev/zero of="$DOCROOT/big.bin" bs=1 count="$BIG_BYTES" status=none
 
+# Compression test fixtures: CSS with fake precompressed siblings, plus a
+# PNG with a fake .gz sibling to verify non-compressible MIME bypass.
+printf 'body{color:red}\n' > "$DOCROOT/comp.css"
+printf 'GZIPPED_CONTENT\n' > "$DOCROOT/comp.css.gz"
+printf 'BROTLI_CONTENT_\n' > "$DOCROOT/comp.css.br"
+printf 'image_data'        > "$DOCROOT/nocomp.png"
+printf 'GZIPPED_PNG\n'     > "$DOCROOT/nocomp.png.gz"
+
 # Backward compatibility: legacy env name forces shutdown lane on.
 if [[ "$ENABLE_SHUTDOWN_BASELINE_ITESTS" == "1" ]]; then
   ENABLE_SHUTDOWN_ITESTS=1
@@ -732,5 +740,8 @@ run_client conditional-304 --nodelay
 
 echo "[itest] running range requests 206/416 (SERVER_FEATURES=all)" >&2
 run_client range-requests --nodelay
+
+echo "[itest] running precompressed sibling serving (SERVER_FEATURES=all)" >&2
+run_client precompressed --nodelay
 
 echo "[itest] OK" >&2

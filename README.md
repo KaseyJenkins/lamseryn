@@ -32,7 +32,8 @@ well-suited for exploring what an io_uring-native networking stack looks like in
   response, slow readers are forcibly disconnected, and error paths drain cleanly
   before closing.
 - **Static file serving** — GET/HEAD with path-traversal-safe resolution,
-  automatic sendfile selection for large responses, and per-vhost docroot
+  automatic sendfile selection for large responses, precompressed sibling
+  selection (`.br`/`.gz`) from `Accept-Encoding`, and per-vhost docroot
   configuration.
 - **Multi-vhost INI configuration** — workers, timeouts, ports, docroots, TLS
   settings, and logging knobs are all driven by a single `server.ini` file.

@@ -11,6 +11,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "include/compression.h"
 #include "include/conn.h"
 #include "include/http_headers.h"
 #include "include/http_range.h"
@@ -505,6 +506,76 @@ int static_serve_tx_set_dynamic_response_ex(struct conn *c,
   return 0;
 }
 
+// Builds optional static-response headers (validators, Accept-Ranges, Content-Encoding, Vary).
+// Returns bytes written and exports ETag for later conditional checks.
+// If Content-Encoding cannot fit, clears serving_enc so caller falls back to identity file.
+static size_t static_serve_assemble_extra_headers(
+    char *buf, size_t bufsz,
+    const struct stat *st,
+    uint64_t features,
+    unsigned *serving_enc,
+    const char *ctype,
+    char *etag_out, size_t etag_outsz, size_t *etag_out_len) {
+  char last_mod_buf[64];
+  size_t last_mod_len = 0;
+  size_t etag_len = 0;
+
+  if (features & CFG_FEAT_CONDITIONAL) {
+    etag_len = static_serve_format_etag(etag_out, etag_outsz, st);
+    last_mod_len =
+      static_serve_format_last_modified(last_mod_buf, sizeof(last_mod_buf), st);
+  }
+  *etag_out_len = etag_len;
+
+  size_t vhdr_len = 0;
+  if (etag_len > 0 || last_mod_len > 0) {
+    vhdr_len = static_serve_build_validator_headers(
+      buf, bufsz, etag_out, etag_len, last_mod_buf, last_mod_len);
+  }
+  if (vhdr_len == 0) {
+    buf[0] = '\0';
+  }
+
+  if (features & CFG_FEAT_RANGE) {
+    static const char ar[] = "Accept-Ranges: bytes\r\n";
+    size_t ar_len = sizeof(ar) - 1;
+    if (vhdr_len + ar_len < bufsz) {
+      memcpy(buf + vhdr_len, ar, ar_len);
+      vhdr_len += ar_len;
+      buf[vhdr_len] = '\0';
+    }
+  }
+
+  int vary_needed = (features & CFG_FEAT_COMPRESSION)
+                    && compress_mime_is_compressible(ctype);
+  if (*serving_enc) {
+    const char *enc_name = compress_enc_name(*serving_enc);
+    char ce_vary[64];
+    int n = snprintf(ce_vary, sizeof(ce_vary),
+                     "Content-Encoding: %s\r\nVary: Accept-Encoding\r\n",
+                     enc_name);
+    if (n > 0 && (size_t)n < sizeof(ce_vary)
+        && vhdr_len + (size_t)n < bufsz) {
+      memcpy(buf + vhdr_len, ce_vary, (size_t)n);
+      vhdr_len += (size_t)n;
+      buf[vhdr_len] = '\0';
+      vary_needed = 0;
+    } else {
+      *serving_enc = 0;
+    }
+  }
+  if (vary_needed) {
+    static const char vary_hdr[] = "Vary: Accept-Encoding\r\n";
+    size_t vary_len = sizeof(vary_hdr) - 1;
+    if (vhdr_len + vary_len < bufsz) {
+      memcpy(buf + vhdr_len, vary_hdr, vary_len);
+      vhdr_len += vary_len;
+      buf[vhdr_len] = '\0';
+    }
+  }
+  return vhdr_len;
+}
+
 int static_serve_try_prepare_docroot_response(struct conn *c,
                                               int docroot_fd,
                                               int *static_open_err) {
@@ -534,33 +605,84 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
       && (uint64_t)st.st_size <= (uint64_t)SIZE_MAX) {
     size_t fsz = (size_t)st.st_size;
     const int keep = c->h1.want_keepalive ? 1 : 0;
+    const struct vhost_t *vh = c->vhost;
     const char *ctype = static_serve_mime_type_for_path(relpath);
 
-    char etag_buf[64];
-    size_t etag_len = static_serve_format_etag(etag_buf, sizeof(etag_buf), &st);
-
-    char last_mod_buf[64];
-    size_t last_mod_len =
-      static_serve_format_last_modified(last_mod_buf, sizeof(last_mod_buf), &st);
-
-    char validator_hdrs[256];
-    size_t vhdr_len = static_serve_build_validator_headers(
-      validator_hdrs, sizeof(validator_hdrs),
-      etag_buf, etag_len,
-      last_mod_buf, last_mod_len);
-    if (vhdr_len == 0) {
-      validator_hdrs[0] = '\0';
+    // Precompressed sibling probe: look for a .br or .gz file next to the
+    // requested path and serve it if the client advertises the encoding.
+    // Skip Range requests: byte offsets are defined on identity bytes, so
+    // serving compressed bytes would break the requested positions.
+    unsigned serving_enc = 0;
+    if (vh && (vh->features & CFG_FEAT_COMPRESSION)
+        && compress_mime_is_compressible(ctype)
+        && (c->h1.method == HTTP_GET || c->h1.method == HTTP_HEAD)) {
+      int has_range_hdr =
+        (vh->features & CFG_FEAT_RANGE) != 0
+        && http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count,
+                                  HDR_ID_RANGE, NULL) != NULL;
+      if (!has_range_hdr) {
+        uint16_t ae_len = 0;
+        const char *ae = http_header_find_value(
+          c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_ACCEPT_ENCODING, &ae_len);
+        if (ae && ae_len > 0) {
+          unsigned accepted = compress_parse_accept_encoding(ae, ae_len);
+          // Probe in preference order: brotli first, gzip fallback.
+          static const unsigned pref[] = {COMP_ENC_BROTLI, COMP_ENC_GZIP, 0};
+          for (int pi = 0; pref[pi] && !serving_enc; pi++) {
+            if (!(accepted & pref[pi])) {
+              continue;
+            }
+            const char *ext = compress_enc_ext(pref[pi]);
+            char comp_relpath[PATH_MAX];
+            int n = snprintf(comp_relpath, sizeof(comp_relpath), "%s%s", relpath, ext);
+            if (n <= 0 || (size_t)n >= sizeof(comp_relpath)) {
+              continue;
+            }
+            int comp_fd = static_serve_openat_beneath_nofollow(docroot_fd, comp_relpath);
+            if (comp_fd >= 0) {
+              struct stat comp_st;
+              if (fstat(comp_fd, &comp_st) == 0
+                  && S_ISREG(comp_st.st_mode)
+                  && comp_st.st_size >= 0
+                  && (uint64_t)comp_st.st_size <= (uint64_t)SIZE_MAX) {
+                close(fd);
+                fd = comp_fd;
+                comp_fd = -1;
+                st   = comp_st;
+                fsz  = (size_t)comp_st.st_size;
+                serving_enc = pref[pi];
+              }
+              if (comp_fd >= 0) {
+                close(comp_fd);
+              }
+            }
+          }
+        }
+      }
     }
 
-    const struct vhost_t *vh = c->vhost;
-    if (vh && (vh->features & CFG_FEAT_RANGE) && vhdr_len > 0) {
-      static const char ar[] = "Accept-Ranges: bytes\r\n";
-      size_t ar_len = sizeof(ar) - 1;
-      if (vhdr_len + ar_len < sizeof(validator_hdrs)) {
-        memcpy(validator_hdrs + vhdr_len, ar, ar_len);
-        vhdr_len += ar_len;
-        validator_hdrs[vhdr_len] = '\0';
+    char etag_buf[64];
+    size_t etag_len = 0;
+    char validator_hdrs[256];
+    unsigned orig_serving_enc = serving_enc;
+    (void)static_serve_assemble_extra_headers(
+      validator_hdrs, sizeof(validator_hdrs),
+      &st, vh ? vh->features : 0, &serving_enc, ctype,
+      etag_buf, sizeof(etag_buf), &etag_len);
+    if (orig_serving_enc && !serving_enc) {
+      // Content-Encoding header didn't fit — reopen the original
+      // uncompressed file so we never send raw compressed bytes.
+      close(fd);
+      fd = static_serve_openat_beneath_nofollow(docroot_fd, relpath);
+      if (fd < 0) {
+        *static_open_err = request_static_open_err_merge(*static_open_err, errno);
+        goto done;
       }
+      if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)
+          || st.st_size < 0 || (uint64_t)st.st_size > (uint64_t)SIZE_MAX) {
+        goto done;
+      }
+      fsz = (size_t)st.st_size;
     }
     if (vh && (vh->features & CFG_FEAT_CONDITIONAL)
         && (c->h1.method == HTTP_GET || c->h1.method == HTTP_HEAD)
