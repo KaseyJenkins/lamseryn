@@ -130,6 +130,7 @@ start_server() {
   local features=${1:-}
   local access_log_enabled=${2:-false}
   local access_log_path=${3:-stderr}
+  local compression_dynamic=${4:-false}
   local static=true
   local range=false
   local conditional=false
@@ -172,6 +173,7 @@ range = $range
 conditional = $conditional
 compression = $compression
 auth = $auth
+compression_dynamic = $compression_dynamic
 max_header_fields = 100
 EOF
 
@@ -743,5 +745,10 @@ run_client range-requests --nodelay
 
 echo "[itest] running precompressed sibling serving (SERVER_FEATURES=all)" >&2
 run_client precompressed --nodelay
+
+stop_server
+start_server "all" "false" "stderr" "true"
+echo "[itest] running dynamic compression (compression_dynamic=true)" >&2
+DOCROOT="$DOCROOT" run_client dynamic-compression --nodelay
 
 echo "[itest] OK" >&2

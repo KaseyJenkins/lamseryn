@@ -2801,6 +2801,248 @@ static int test_conditional_304(const char *host, const char *port,
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic (on-the-fly) gzip compression integration tests.
+// The server INI must have compression_dynamic = true on the vhost.
+// The test relies on g_docroot (set by DOCROOT env) to create a real CSS file
+// without a precompressed sibling.
+// ---------------------------------------------------------------------------
+
+static int test_dynamic_compression(const char *host, const char *port,
+                                    int nodelay, int timeout_ms, int verbose) {
+  const char *docroot = getenv("DOCROOT");
+  if (!docroot || docroot[0] == '\0') {
+    die("dynamic-compression: DOCROOT env not set");
+  }
+
+  // Create a compressible CSS file with no .gz/.br sibling.
+  char dynpath[4096];
+  snprintf(dynpath, sizeof(dynpath), "%s/dynamic.css", docroot);
+  {
+    FILE *f = fopen(dynpath, "w");
+    if (!f) die("dynamic-compression: could not create %s", dynpath);
+    // ~600 bytes of CSS-like content — above the default min_bytes (256)
+    // and well below the default max_bytes (1 MiB).
+    for (int i = 0; i < 12; i++) {
+      fprintf(f,
+        ".selector-%d { display: flex; justify-content: center; "
+        "align-items: center; background-color: #ffffff; }\n", i);
+    }
+    fclose(f);
+  }
+
+  // ---- Sub-test 1: gzip response when client sends Accept-Encoding: gzip ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /dynamic.css HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Accept-Encoding: gzip\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    char body[4096];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+    if (st != 200)
+      die("dynamic-compression: gzip expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) != 0)
+      die("dynamic-compression: gzip response missing Content-Encoding header");
+    if (strcmp(ce, "gzip") != 0)
+      die("dynamic-compression: expected Content-Encoding: gzip, got '%s'", ce);
+    char vary[64];
+    if (parse_header_value_simple(hdrs, "Vary", vary, sizeof(vary)) != 0)
+      die("dynamic-compression: gzip response missing Vary header");
+    if (strcmp(vary, "Accept-Encoding") != 0)
+      die("dynamic-compression: expected Vary: Accept-Encoding, got '%s'", vary);
+    if (cl <= 0 || (size_t)cl != body_len)
+      die("dynamic-compression: Content-Length %ld doesn't match body %zu", cl, body_len);
+    // body must start with gzip magic bytes 0x1f 0x8b
+    if (body_len < 2
+        || (unsigned char)body[0] != 0x1fu
+        || (unsigned char)body[1] != 0x8bu)
+      die("dynamic-compression: body does not have gzip magic bytes");
+    if (verbose)
+      info("dynamic-compression: gzip OK Content-Length=%ld compressed_len=%zu", cl, body_len);
+  }
+
+  // ---- Sub-test 2: identity response when no Accept-Encoding sent ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /dynamic.css HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    char body[4096];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+    if (st != 200)
+      die("dynamic-compression: identity expected 200, got %d", st);
+    char ce[64];
+    int has_ce = (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) == 0);
+    if (has_ce)
+      die("dynamic-compression: identity response must not have Content-Encoding, got '%s'", ce);
+    // Vary should still be present for compressible MIME even on identity.
+    char vary[64];
+    if (parse_header_value_simple(hdrs, "Vary", vary, sizeof(vary)) != 0)
+      die("dynamic-compression: identity response missing Vary header");
+    if (verbose)
+      info("dynamic-compression: identity (no AE) OK Content-Length=%ld", cl);
+  }
+
+  // ---- Sub-test 3: Accept-Encoding: identity only → no compression ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /dynamic.css HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Accept-Encoding: identity\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("dynamic-compression: identity-AE expected 200, got %d", st);
+    char ce[64];
+    int has_ce = (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) == 0);
+    if (has_ce)
+      die("dynamic-compression: identity-AE response must not have Content-Encoding, got '%s'", ce);
+    if (verbose)
+      info("dynamic-compression: identity AE OK");
+  }
+
+  // ---- Sub-test 4: precompressed sibling still takes priority ----
+  // Create a .gz sibling so the sibling probe fires first.
+  {
+    char sibpath[4096];
+    snprintf(sibpath, sizeof(sibpath), "%s/dynamic.css.gz", docroot);
+    FILE *f = fopen(sibpath, "w");
+    if (!f) die("dynamic-compression: could not create sibling %s", sibpath);
+    fprintf(f, "FAKE_GZ_CONTENT\n");
+    fclose(f);
+
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /dynamic.css HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Accept-Encoding: gzip\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    char body[256];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+    if (st != 200)
+      die("dynamic-compression: sibling-priority expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) != 0)
+      die("dynamic-compression: sibling-priority missing Content-Encoding");
+    if (strcmp(ce, "gzip") != 0)
+      die("dynamic-compression: sibling-priority expected gzip, got '%s'", ce);
+    // Body must be the sibling content (not valid gzip magic, it's our fake file).
+    if (body_len == 0)
+      die("dynamic-compression: sibling-priority body empty");
+    // The sibling body starts with 'F' (FAKE_GZ_CONTENT), not 0x1f 0x8b.
+    if ((unsigned char)body[0] == 0x1fu && (unsigned char)body[1] == 0x8bu)
+      die("dynamic-compression: sibling-priority served dynamic gzip instead of sibling");
+    if (verbose)
+      info("dynamic-compression: sibling priority OK");
+
+    remove(sibpath);
+  }
+
+#ifndef HAVE_BROTLI
+  // Regression guard: without brotli support, a br-only Accept-Encoding must not
+  // trigger dynamic compression. dyn_supported excludes COMP_ENC_BROTLI so
+  // dyn_eligible is false; identity response. Vary must still be present.
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /dynamic.css HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Accept-Encoding: br\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("dynamic-compression: br-no-brotli expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) == 0)
+      die("dynamic-compression: br-no-brotli got unexpected Content-Encoding: %s", ce);
+    char vary[64];
+    if (parse_header_value_simple(hdrs, "Vary", vary, sizeof(vary)) != 0)
+      die("dynamic-compression: br-no-brotli missing Vary header");
+    if (strcmp(vary, "Accept-Encoding") != 0)
+      die("dynamic-compression: br-no-brotli Vary expected Accept-Encoding, got '%s'", vary);
+    if (verbose)
+      info("dynamic-compression: br-only identity (no HAVE_BROTLI) OK");
+  }
+#endif /* !HAVE_BROTLI */
+
+#ifdef HAVE_BROTLI
+  // ---- Sub-test 5: dynamic brotli when client sends Accept-Encoding: br ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /dynamic.css HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Accept-Encoding: br\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    char body[4096];
+    size_t body_len = 0;
+    int st = send_and_read_with_body(fd, req, verbose, hdrs, sizeof(hdrs),
+                                     &cl, body, sizeof(body), &body_len);
+    close(fd);
+
+    if (st != 200)
+      die("dynamic-compression: brotli expected 200, got %d", st);
+    char ce[64];
+    if (parse_header_value_simple(hdrs, "Content-Encoding", ce, sizeof(ce)) != 0)
+      die("dynamic-compression: brotli missing Content-Encoding header");
+    if (strcmp(ce, "br") != 0)
+      die("dynamic-compression: brotli expected Content-Encoding: br, got '%s'", ce);
+    char vary[64];
+    if (parse_header_value_simple(hdrs, "Vary", vary, sizeof(vary)) != 0)
+      die("dynamic-compression: brotli missing Vary header");
+    if (strcmp(vary, "Accept-Encoding") != 0)
+      die("dynamic-compression: brotli Vary expected Accept-Encoding, got '%s'", vary);
+    if (body_len == 0)
+      die("dynamic-compression: brotli body empty");
+    if (verbose)
+      info("dynamic-compression: brotli OK Content-Length=%ld compressed_len=%zu", cl, body_len);
+  }
+#endif /* HAVE_BROTLI */
+
+  info("dynamic-compression: OK (5 sub-tests)");
+  return 0;
+}
+
 static int test_precompressed(const char *host, const char *port,
                               int nodelay, int timeout_ms, int verbose) {
   // gzip variant: Accept-Encoding: gzip and .gz sibling present.
@@ -3326,6 +3568,10 @@ int main(int argc, char **argv) {
 
   if (!strcmp(mode, "precompressed")) {
     return test_precompressed(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "dynamic-compression")) {
+    return test_dynamic_compression(host, port, nodelay, timeout_ms, verbose);
   }
 
   usage(argv[0]);

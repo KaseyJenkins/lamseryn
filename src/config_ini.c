@@ -712,6 +712,49 @@ static int on_kv(void *user, const char *section, const char *name, const char *
     return 1;
   }
 
+  if (!strcasecmp(name, "compression_dynamic")) {
+    bool b;
+    if (!parse_bool(value, &b)) {
+      LOGW(LOGC_CORE, "invalid boolean for vhost key '%s': %s", name, value ? value : "(null)");
+      return 1;
+    }
+    vh->comp_dynamic = b ? 1u : 0u;
+    vh->vf_present |= VF_COMP_DYNAMIC;
+    return 1;
+  }
+  if (!strcasecmp(name, "compression_dynamic_max_bytes")) {
+    unsigned v;
+    if (!parse_u32(value, &v)) {
+      LOGW(LOGC_CORE, "invalid uint for vhost key '%s': %s", name, value ? value : "(null)");
+      return 1;
+    }
+    vh->comp_dynamic_max_bytes = v;
+    vh->vf_present |= VF_COMP_DYN_MAX;
+    return 1;
+  }
+  if (!strcasecmp(name, "compression_dynamic_min_bytes")) {
+    unsigned v;
+    if (!parse_u32(value, &v)) {
+      LOGW(LOGC_CORE, "invalid uint for vhost key '%s': %s", name, value ? value : "(null)");
+      return 1;
+    }
+    vh->comp_dynamic_min_bytes = v;
+    vh->vf_present |= VF_COMP_DYN_MIN;
+    return 1;
+  }
+  if (!strcasecmp(name, "compression_dynamic_effort")) {
+    unsigned v;
+    if (!parse_u32(value, &v) || v < 1 || v > 9) {
+      LOGW(LOGC_CORE,
+           "invalid compression_dynamic_effort '%s': expected 1-9",
+           value ? value : "(null)");
+      return 1;
+    }
+    vh->comp_dynamic_effort = v;
+    vh->vf_present |= VF_COMP_DYN_LEVEL;
+    return 1;
+  }
+
   LOGW(LOGC_CORE, "unknown vhost key '%s'", name ? name : "(null)");
   return 1;
 }
@@ -787,6 +830,14 @@ int config_load_ini(const char *path, struct config_t *cfg, char err[256]) {
         }
         return -1;
       }
+    }
+
+    if ((vh->vf_present & VF_COMP_DYN_MIN) && (vh->vf_present & VF_COMP_DYN_MAX)
+        && vh->comp_dynamic_min_bytes > vh->comp_dynamic_max_bytes) {
+      LOGW(LOGC_CORE,
+           "vhost '%s': compression_dynamic_min_bytes (%u) > compression_dynamic_max_bytes (%u); "
+           "dynamic compression will never fire",
+           vh->name, vh->comp_dynamic_min_bytes, vh->comp_dynamic_max_bytes);
     }
   }
 

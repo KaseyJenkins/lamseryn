@@ -613,6 +613,8 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
     // Skip Range requests: byte offsets are defined on identity bytes, so
     // serving compressed bytes would break the requested positions.
     unsigned serving_enc = 0;
+    // accepted is hoisted so the dynamic compression path can reuse it.
+    unsigned accepted = 0;
     if (vh && (vh->features & CFG_FEAT_COMPRESSION)
         && compress_mime_is_compressible(ctype)
         && (c->h1.method == HTTP_GET || c->h1.method == HTTP_HEAD)) {
@@ -625,7 +627,7 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
         const char *ae = http_header_find_value(
           c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_ACCEPT_ENCODING, &ae_len);
         if (ae && ae_len > 0) {
-          unsigned accepted = compress_parse_accept_encoding(ae, ae_len);
+          accepted = compress_parse_accept_encoding(ae, ae_len);
           // Probe in preference order: brotli first, gzip fallback.
           static const unsigned pref[] = {COMP_ENC_BROTLI, COMP_ENC_GZIP, 0};
           for (int pi = 0; pref[pi] && !serving_enc; pi++) {
@@ -897,8 +899,33 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
     struct request_static_serve_plan static_serve = request_build_static_serve_plan(c, fsz);
     int attempt_sendfile = 0;
 
+    const unsigned dyn_comp_max =
+      (vh && (vh->vf_present & VF_COMP_DYN_MAX)) ? vh->comp_dynamic_max_bytes : (1u << 20);
+    const unsigned dyn_comp_min =
+      (vh && (vh->vf_present & VF_COMP_DYN_MIN)) ? vh->comp_dynamic_min_bytes : 256u;
+    // Encodings we can actually produce dynamically in this build.
+    static const unsigned dyn_supported =
+      COMP_ENC_GZIP
+#ifdef HAVE_BROTLI
+      | COMP_ENC_BROTLI
+#endif
+      ;
+    int dyn_eligible =
+      serving_enc == 0
+      && vh && (vh->features & CFG_FEAT_COMPRESSION)
+      && (vh->vf_present & VF_COMP_DYNAMIC) && vh->comp_dynamic
+      && compress_mime_is_compressible(ctype)
+      && c->h1.method == HTTP_GET
+      && (accepted & dyn_supported) != 0
+      && fsz >= (size_t)dyn_comp_min
+      && fsz <= (size_t)dyn_comp_max;
+
     enum request_static_serve_mode mode = static_serve.mode;
     if (c->tls_enabled && mode == REQUEST_STATIC_SERVE_SENDFILE) {
+      mode = REQUEST_STATIC_SERVE_BUFFERED;
+    }
+    // Dynamic compression requires reading into userspace; force buffered.
+    if (dyn_eligible && mode == REQUEST_STATIC_SERVE_SENDFILE) {
       mode = REQUEST_STATIC_SERVE_BUFFERED;
     }
 
@@ -934,11 +961,62 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
         fd = -1;
 
         if (got == fsz) {
+          if (dyn_eligible) {
+            const int level =
+              (vh && (vh->vf_present & VF_COMP_DYN_LEVEL)) ? (int)vh->comp_dynamic_effort : 1;
+#ifdef HAVE_BROTLI
+            static const unsigned try_enc[] = {COMP_ENC_BROTLI, COMP_ENC_GZIP, 0};
+#else
+            static const unsigned try_enc[] = {COMP_ENC_GZIP, 0};
+#endif
+            for (int i = 0; try_enc[i] && !serving_enc; i++) {
+              if (!(accepted & try_enc[i])) {
+                continue;
+              }
+              void *comp_buf = NULL;
+              size_t comp_len = 0;
+              enum compress_result cr;
+#ifdef HAVE_BROTLI
+              if (try_enc[i] == COMP_ENC_BROTLI) {
+                // effort maps 1:1 to brotli quality (valid range 0-11).
+                int q = (level <= 11) ? level : 4;
+                cr = compress_brotli(file_buf, fsz, &comp_buf, &comp_len, q);
+              } else
+#endif
+              {
+                cr = compress_gzip(file_buf, fsz, &comp_buf, &comp_len, level);
+              }
+              if (cr == COMPRESS_OK) {
+                free(file_buf);
+                file_buf = (char *)comp_buf;
+                fsz = comp_len;
+                serving_enc = try_enc[i];
+              }
+            }
+          }
+
+          // Build the extra-headers string, prepending Content-Encoding / Vary
+          // for dynamically compressed responses (validator_hdrs was assembled
+          // with serving_enc == 0 and does not include them).
+          const char *resp_extra = validator_hdrs;
+          char dyn_extra[512];
+          if (serving_enc && !orig_serving_enc) {
+            // validator_hdrs was built with serving_enc==0; for a compressible
+            // MIME type it already contains "Vary: Accept-Encoding".  We only
+            // need to prepend Content-Encoding — do not add a second Vary.
+            int n = snprintf(dyn_extra, sizeof(dyn_extra),
+                             "Content-Encoding: %s\r\n%s",
+                             compress_enc_name(serving_enc), validator_hdrs);
+            if (n > 0 && (size_t)n < sizeof(dyn_extra)) {
+              resp_extra = dyn_extra;
+            }
+          }
+
 #if ENABLE_ITEST_ECHO
           c->tx.itest_static_mode = "buffered";
 #endif
           if (static_serve_tx_set_dynamic_response_ex(c, "200 OK", ctype, fsz, file_buf, fsz, keep,
-                                                       validator_hdrs) == 0) {
+                                                       resp_extra) == 0) {
             free(file_buf);
             return 1;
           }

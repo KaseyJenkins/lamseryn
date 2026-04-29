@@ -26,3 +26,31 @@ const char *compress_enc_ext(unsigned enc);
 // Returns the Content-Encoding token for a given encoding (e.g. "gzip").
 // Returns NULL for unknown encodings.
 const char *compress_enc_name(unsigned enc);
+
+// ---------------------------------------------------------------------------
+// Dynamic (on-the-fly) compression
+// ---------------------------------------------------------------------------
+
+// Return status for compress_gzip() / compress_brotli().
+enum compress_result {
+  COMPRESS_OK,       // *out_buf and *out_len set; caller must free(*out_buf).
+  COMPRESS_EXPANDED, // Compressed form >= src_len; implementation freed buf internally.
+  COMPRESS_ERROR,    // Library failure; no buffer allocated.
+};
+
+// Compress src (src_len bytes) using gzip (RFC 1952).
+// On COMPRESS_OK, *out_buf is a malloc'd buffer and *out_len is its size.
+// Caller must free(*out_buf) after COMPRESS_OK.
+// level must be in [1,9]; pass 0 to use the default (Z_DEFAULT_COMPRESSION).
+enum compress_result compress_gzip(const void *src, size_t src_len,
+                                   void **out_buf, size_t *out_len,
+                                   int level);
+
+#ifdef HAVE_BROTLI
+// Compress src (src_len bytes) using Brotli.
+// Same ownership contract as compress_gzip().
+// quality must be in [0,11]; pass -1 to use the default (4).
+enum compress_result compress_brotli(const void *src, size_t src_len,
+                                     void **out_buf, size_t *out_len,
+                                     int quality);
+#endif

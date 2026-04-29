@@ -29,7 +29,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y liburing-dev
+          sudo apt-get install -y liburing-dev zlib1g-dev libbrotli-dev
 
       - name: Run canonical HTTP/1 Phase 1 gate
         run: make phase1-gate

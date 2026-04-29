@@ -33,6 +33,48 @@ LIBURING_DEPS := $(LIBUR_A)
 LIBURING_LIBS :=
 endif
 
+# zlib wiring for dynamic compression tests:
+# - If third_party/zlib/zlib.h exists (source tree present), use the locally-built copy.
+# - Otherwise, fall back to system -lz.
+ZLIB_DIR := ../third_party/zlib
+ifneq ($(wildcard $(ZLIB_DIR)/zlib.h),)
+ZLIB_CFLAGS  := -I"$(ZLIB_DIR)"
+ZLIB_LDFLAGS := -L"$(ZLIB_DIR)/_build"
+ZLIB_LDLIBS  := -lz
+ZLIB_DEPS    := $(ZLIB_DIR)/_build/libz.a
+else
+ZLIB_CFLAGS  :=
+ZLIB_LDFLAGS :=
+ZLIB_LDLIBS  := -lz
+ZLIB_DEPS    :=
+endif
+
+# brotli wiring for compression tests:
+# - If third_party/brotli/c/include/brotli/encode.h exists (source tree present),
+#   set BROTLI_DEPS so make builds _build/libbrotlienc.a automatically.
+# - Otherwise, probe system pkg-config.
+# - If neither, brotli is disabled (HAVE_BROTLI not defined).
+BROTLI_DIR := ../third_party/brotli
+BROTLI_CFLAGS      :=
+BROTLI_LDFLAGS     :=
+BROTLI_LDLIBS      :=
+BROTLI_LDLIBS_FULL :=
+BROTLI_DEPS        :=
+ifneq ($(wildcard $(BROTLI_DIR)/c/include/brotli/encode.h),)
+BROTLI_CFLAGS      := -DHAVE_BROTLI -isystem "$(BROTLI_DIR)/c/include"
+BROTLI_LDFLAGS     := -L"$(BROTLI_DIR)/_build"
+BROTLI_LDLIBS      := -lbrotlienc -lbrotlicommon -lm
+BROTLI_LDLIBS_FULL := -lbrotlienc -lbrotlidec -lbrotlicommon -lm
+BROTLI_DEPS        := $(BROTLI_DIR)/_build/libbrotlienc.a $(BROTLI_DIR)/_build/libbrotlidec.a
+else
+BROTLI_PKG := $(shell pkg-config --exists libbrotlienc 2>/dev/null && echo yes)
+ifeq ($(BROTLI_PKG),yes)
+BROTLI_CFLAGS      := -DHAVE_BROTLI $(shell pkg-config --cflags libbrotlienc)
+BROTLI_LDLIBS      := $(shell pkg-config --libs libbrotlienc)
+BROTLI_LDLIBS_FULL := $(shell pkg-config --libs libbrotlienc libbrotlidec 2>/dev/null || pkg-config --libs libbrotlienc)
+endif
+endif
+
 # llhttp-specific warning leniency.
 LLHTTP_CFLAGS := -Wno-unused-parameter
 
@@ -71,6 +113,7 @@ TEST_BIN_STATIC_304    := $(BUILD)/test_static_serve_304_greatest
 TEST_BIN_HTTP_RANGE    := $(BUILD)/test_http_range_greatest
 TEST_BIN_COMPRESSION   := $(BUILD)/test_compression_greatest
 TEST_BIN_STATIC_HDRS  := $(BUILD)/test_static_serve_headers_greatest
+TEST_BIN_COMP_DYN     := $(BUILD)/test_compression_dynamic_greatest
 
 .PHONY: all
 all: $(TEST_BIN_REAL) \
@@ -97,8 +140,8 @@ all: $(TEST_BIN_REAL) \
 	$(TEST_BIN_STATIC_304) \
 	$(TEST_BIN_HTTP_RANGE) \
 	$(TEST_BIN_COMPRESSION) \
-	$(TEST_BIN_STATIC_HDRS)
-
+        $(TEST_BIN_STATIC_HDRS) \
+        $(TEST_BIN_COMP_DYN)
 $(BUILD):
 	@mkdir -p $(BUILD)
 
@@ -169,17 +212,27 @@ $(TEST_BIN_ACCESS_LOG): unit/test_access_log_greatest.c ../src/access_log.c ../s
 $(TEST_BIN_CONN_LIFECYCLE): unit/test_conn_lifecycle_greatest.c ../src/conn_lifecycle.c ../src/conn_store.c ../src/req_arena_stats.c ../src/logger.c $(LIBURING_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
-$(TEST_BIN_STATIC_304): unit/test_static_serve_304_greatest.c ../src/compression.c | $(BUILD)
-	$(CC) $(CFLAGS) -I vendor -o $@ $^
+$(TEST_BIN_STATIC_304): unit/test_static_serve_304_greatest.c ../src/compression.c $(ZLIB_DEPS) $(BROTLI_DEPS) | $(BUILD)
+	$(CC) $(CFLAGS) $(ZLIB_CFLAGS) $(BROTLI_CFLAGS) -I vendor -o $@ unit/test_static_serve_304_greatest.c ../src/compression.c $(ZLIB_LDFLAGS) $(ZLIB_LDLIBS) $(BROTLI_LDFLAGS) $(BROTLI_LDLIBS)
 
 $(TEST_BIN_HTTP_RANGE): unit/test_http_range_greatest.c ../src/http_range.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^
 
-$(TEST_BIN_COMPRESSION): unit/test_compression_greatest.c ../src/compression.c | $(BUILD)
-	$(CC) $(CFLAGS) -I vendor -o $@ $^
+# Build rules for locally-sourced third-party libraries: delegate to the parent Makefile.
+$(ZLIB_DIR)/_build/libz.a:
+	$(MAKE) -C .. zlib-local
 
-$(TEST_BIN_STATIC_HDRS): unit/test_static_serve_headers_greatest.c ../src/compression.c | $(BUILD)
-	$(CC) $(CFLAGS) -I vendor -o $@ $^
+$(BROTLI_DIR)/_build/libbrotlienc.a $(BROTLI_DIR)/_build/libbrotlidec.a &:
+	$(MAKE) -C .. brotli-local
+
+$(TEST_BIN_COMPRESSION): unit/test_compression_greatest.c ../src/compression.c $(ZLIB_DEPS) $(BROTLI_DEPS) | $(BUILD)
+	$(CC) $(CFLAGS) $(ZLIB_CFLAGS) $(BROTLI_CFLAGS) -I vendor -o $@ unit/test_compression_greatest.c ../src/compression.c $(ZLIB_LDFLAGS) $(ZLIB_LDLIBS) $(BROTLI_LDFLAGS) $(BROTLI_LDLIBS)
+
+$(TEST_BIN_COMP_DYN): unit/test_compression_dynamic_greatest.c ../src/compression.c $(ZLIB_DEPS) $(BROTLI_DEPS) | $(BUILD)
+	$(CC) $(CFLAGS) $(ZLIB_CFLAGS) $(BROTLI_CFLAGS) -I vendor -o $@ unit/test_compression_dynamic_greatest.c ../src/compression.c $(ZLIB_LDFLAGS) $(ZLIB_LDLIBS) $(BROTLI_LDFLAGS) $(BROTLI_LDLIBS_FULL) $(LDFLAGS)
+
+$(TEST_BIN_STATIC_HDRS): unit/test_static_serve_headers_greatest.c ../src/compression.c $(ZLIB_DEPS) $(BROTLI_DEPS) | $(BUILD)
+	$(CC) $(CFLAGS) $(ZLIB_CFLAGS) $(BROTLI_CFLAGS) -I vendor -o $@ unit/test_static_serve_headers_greatest.c ../src/compression.c $(ZLIB_LDFLAGS) $(ZLIB_LDLIBS) $(BROTLI_LDFLAGS) $(BROTLI_LDLIBS)
 
 TESTS ?= $(wildcard $(BUILD)/test_*)
 TEST_FLAGS ?= -v

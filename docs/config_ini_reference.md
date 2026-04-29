@@ -1,6 +1,6 @@
 # INI Configuration Reference
 
-Last updated: 2026-03-20
+Last updated: 2026-04-28
 
 This document is the authoritative reference for `server.ini` keys accepted by Lamseryn.
 
@@ -10,7 +10,7 @@ This document is the authoritative reference for `server.ini` keys accepted by L
 - If `SERVER_CONFIG` is unset/empty, the server loads `server.ini` from repo root.
 - At least one `[vhost ...]` section must exist.
 - Maximum vhosts: `32`.
-- Vhost section names must be short enough for parser and internal buffers.
+- Vhost section names must be short enaough for parser and internal buffers.
 
 Accepted vhost section forms:
 
@@ -100,7 +100,11 @@ Each vhost should declare bind/port/docroot and feature toggles.
 | `static` | bool | false | enables static routing behavior |
 | `range` | bool | false | enables capture of `Range` and `If-Range` headers |
 | `conditional` | bool | false | enables capture of conditional headers |
-| `compression` | bool | false | enables capture of `Accept-Encoding` |
+| `compression` | bool | false | enables `Accept-Encoding`-driven precompressed sibling selection (`.br`/`.gz`) and `Content-Encoding`/`Vary` response behavior for compressible static assets |
+| `compression_dynamic` | bool | false | enables on-the-fly compression (gzip always; brotli when built with `HAVE_BROTLI`) for compressible assets that have no precompressed sibling; requires `compression = true`; response buffered in memory before send |
+| `compression_dynamic_min_bytes` | u32 | `256` | files smaller than this threshold are served uncompressed even when `compression_dynamic` is enabled |
+| `compression_dynamic_max_bytes` | u32 | `1048576` (1 MiB) | files larger than this threshold are served uncompressed (sendfile path); prevents unbounded memory use |
+| `compression_dynamic_effort` | u32 | `1` | compression effort `1`–`9` applied to all codecs: for gzip maps to zlib level 1–9; for brotli maps to brotli quality 1–9; `1` is fastest; `9` is smallest output |
 | `auth` | bool | false | enables capture of `Authorization` and `Cookie` |
 | `tls` | bool | inherit from globals or false | explicit vhost override |
 | `tls_cert_file` | string | inherit from globals or empty | required when effective TLS is enabled |
@@ -114,7 +118,9 @@ Each vhost should declare bind/port/docroot and feature toggles.
 Feature-toggle reality:
 
 - `static` affects serving path.
-- `range`, `conditional`, `compression`, `auth` currently drive header capture masks and planned behavior expansion.
+- `range`, `conditional`, and `compression` drive both header capture and static-serving behavior.
+- `compression_dynamic` requires `compression = true`; has no effect if `compression` is disabled.
+- `auth` currently drives header capture for future auth semantics.
 - See `docs/http_capability_matrix.md` for implemented vs planned semantics.
 
 ## TLS Inheritance and Validation

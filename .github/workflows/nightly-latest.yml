@@ -28,6 +28,52 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential perl
 
+      # ── Latest zlib ──────────────────────────────────────────────
+      - name: Resolve latest zlib tag
+        id: zlib-tag
+        run: |
+          tag=$(git ls-remote --tags --sort=-v:refname \
+                https://github.com/madler/zlib.git \
+                'v*' | grep -v '\^{}' | head -n1 | sed 's|.*refs/tags/||')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Cache zlib build
+        id: cache-zlib
+        uses: actions/cache@v5
+        with:
+          path: third_party/zlib
+          key: zlib-${{ steps.zlib-tag.outputs.tag }}
+
+      - name: Clone and build latest zlib
+        if: steps.cache-zlib.outputs.cache-hit != 'true'
+        run: |
+          rm -rf third_party/zlib
+          git clone --depth 1 --branch "${{ steps.zlib-tag.outputs.tag }}" \
+            https://github.com/madler/zlib.git third_party/zlib
+
+      # ── Latest brotli ────────────────────────────────────────────
+      - name: Resolve latest brotli tag
+        id: brotli-tag
+        run: |
+          tag=$(git ls-remote --tags --sort=-v:refname \
+                https://github.com/google/brotli.git \
+                'v*' | grep -v '\^{}' | head -n1 | sed 's|.*refs/tags/||')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Cache brotli build
+        id: cache-brotli
+        uses: actions/cache@v5
+        with:
+          path: third_party/brotli
+          key: brotli-${{ steps.brotli-tag.outputs.tag }}
+
+      - name: Clone latest brotli
+        if: steps.cache-brotli.outputs.cache-hit != 'true'
+        run: |
+          rm -rf third_party/brotli
+          git clone --depth 1 --branch "${{ steps.brotli-tag.outputs.tag }}" \
+            https://github.com/google/brotli.git third_party/brotli
+
       # ── Latest liburing ──────────────────────────────────────────
       - name: Resolve latest liburing commit
         id: liburing-rev

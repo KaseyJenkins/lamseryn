@@ -94,6 +94,21 @@ struct vhost_t {
   uint8_t tls_session_cache;
   uint8_t tls_session_cache_set;
   void *tls_ctx_handle; // Opaque TLS context owned by startup/shutdown lifecycle.
+
+  // Dynamic compression knobs (per-vhost).
+  // present flags: VF_COMP_DYNAMIC etc.
+  uint32_t vf_present;
+  unsigned comp_dynamic;          // bool: enable on-the-fly compression
+  unsigned comp_dynamic_max_bytes; // max file size eligible (default 1 MiB)
+  unsigned comp_dynamic_min_bytes; // min file size eligible (default 256 B)
+  unsigned comp_dynamic_effort;   // compression effort 1-9: gzip level, brotli quality (default 1)
+};
+
+enum {
+  VF_COMP_DYNAMIC  = 1u << 0,
+  VF_COMP_DYN_MAX  = 1u << 1,
+  VF_COMP_DYN_MIN  = 1u << 2,
+  VF_COMP_DYN_LEVEL = 1u << 3,
 };
 
 enum {

@@ -1,6 +1,14 @@
 #include "include/compression.h"
 
+#include <limits.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include <zlib.h>
+
+#ifdef HAVE_BROTLI
+#include <brotli/encode.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Accept-Encoding parsing
@@ -237,3 +245,112 @@ const char *compress_enc_name(unsigned enc) {
     default:              return NULL;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic (on-the-fly) compression
+// ---------------------------------------------------------------------------
+
+enum compress_result compress_gzip(const void *src, size_t src_len,
+                                   void **out_buf, size_t *out_len,
+                                   int level) {
+  if (!src || !out_buf || !out_len) {
+    return COMPRESS_ERROR;
+  }
+  *out_buf = NULL;
+  *out_len = 0;
+
+  // zlib's avail_in/avail_out are uInt (32-bit); reject oversized inputs.
+  if (src_len > (size_t)UINT_MAX) {
+    return COMPRESS_ERROR;
+  }
+
+  // Use Z_DEFAULT_COMPRESSION when caller passes 0.
+  if (level == 0) {
+    level = Z_DEFAULT_COMPRESSION;
+  }
+
+  z_stream strm = {0};
+  // MAX_WBITS + 16 selects gzip framing (RFC 1952).
+  int rc = deflateInit2(&strm, level, Z_DEFLATED,
+                        MAX_WBITS + 16, 8, Z_DEFAULT_STRATEGY);
+  if (rc != Z_OK) {
+    return COMPRESS_ERROR;
+  }
+
+  uLong bound = deflateBound(&strm, (uLong)src_len);
+  void *buf = malloc((size_t)bound);
+  if (!buf) {
+    deflateEnd(&strm);
+    return COMPRESS_ERROR;
+  }
+
+  strm.next_in   = (Bytef *)(uintptr_t)src;
+  strm.avail_in  = (uInt)src_len;
+  strm.next_out  = (Bytef *)buf;
+  strm.avail_out = (uInt)bound;
+
+  rc = deflate(&strm, Z_FINISH);
+  uLong comp_len = bound - strm.avail_out;
+  deflateEnd(&strm);
+
+  if (rc != Z_STREAM_END) {
+    free(buf);
+    return COMPRESS_ERROR;
+  }
+
+  // Expansion guard: if compressed form is not smaller, discard it.
+  if (comp_len >= (uLong)src_len) {
+    free(buf);
+    return COMPRESS_EXPANDED;
+  }
+
+  *out_buf = buf;
+  *out_len = (size_t)comp_len;
+  return COMPRESS_OK;
+}
+
+#ifdef HAVE_BROTLI
+enum compress_result compress_brotli(const void *src, size_t src_len,
+                                     void **out_buf, size_t *out_len,
+                                     int quality) {
+  if (!src || !out_buf || !out_len) {
+    return COMPRESS_ERROR;
+  }
+  *out_buf = NULL;
+  *out_len = 0;
+
+  if (quality < 0) {
+    quality = 4;
+  }
+
+  size_t enc_size = BrotliEncoderMaxCompressedSize(src_len);
+  if (enc_size == 0) {
+    return COMPRESS_ERROR;
+  }
+
+  void *buf = malloc(enc_size);
+  if (!buf) {
+    return COMPRESS_ERROR;
+  }
+
+  size_t out_size = enc_size;
+  BROTLI_BOOL ok = BrotliEncoderCompress(
+    quality, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_GENERIC,
+    src_len, (const uint8_t *)src,
+    &out_size, (uint8_t *)buf);
+
+  if (!ok) {
+    free(buf);
+    return COMPRESS_ERROR;
+  }
+
+  if (out_size >= src_len) {
+    free(buf);
+    return COMPRESS_EXPANDED;
+  }
+
+  *out_buf = buf;
+  *out_len = out_size;
+  return COMPRESS_OK;
+}
+#endif

@@ -1,6 +1,6 @@
 # HTTP Capability Matrix (Current vs Planned)
 
-Last updated: 2026-03-20
+Last updated: 2026-04-29
 
 ## Overview
 
@@ -51,11 +51,11 @@ Legend:
 | `Content-Length` | Enforced (not stored) | parser policy | Syntax/duplicate/conflict checks; body length framing | Implemented |
 | `Transfer-Encoding` | Enforced (not stored) | parser policy | TE parsing, unsupported coding reject, TE+CL reject | Implemented |
 | `Expect` | Enforced (not stored) | parser policy | `100-continue` accepted (no interim 100), unsupported values reject | Implemented (phase policy) |
-| `Range` | Feature-stored | `CFG_FEAT_RANGE` | Captured only; no 206/partial-content response path yet | Captured, semantics pending |
-| `If-Range` | Feature-stored | `CFG_FEAT_RANGE` | Captured only; no range validator decision path yet | Captured, semantics pending |
-| `If-Modified-Since` | Feature-stored | `CFG_FEAT_CONDITIONAL` | Captured only; no 304 evaluator yet | Captured, semantics pending |
-| `If-None-Match` | Feature-stored | `CFG_FEAT_CONDITIONAL` | Captured only; no ETag/304 evaluator yet | Captured, semantics pending |
-| `Accept-Encoding` | Feature-stored | `CFG_FEAT_COMPRESSION` | Captured only; no content-encoding selection/compression pipeline yet | Captured, semantics pending |
+| `Range` | Feature-stored | `CFG_FEAT_RANGE` | Single byte-range parsed and evaluated; satisfiable range -> `206 Partial Content` with `Content-Range`; unsatisfiable -> `416`; multi-range and invalid syntax fall back to `200` full response; `Accept-Ranges: bytes` advertised on all static responses | Implemented |
+| `If-Range` | Feature-stored | `CFG_FEAT_RANGE` | ETag comparison gates range response; mismatch falls back to `200` full response | Implemented |
+| `If-Modified-Since` | Feature-stored | `CFG_FEAT_CONDITIONAL` | Compared against file mtime; match -> `304 Not Modified`; evaluated only when `If-None-Match` is absent (RFC 7232 precedence) | Implemented |
+| `If-None-Match` | Feature-stored | `CFG_FEAT_CONDITIONAL` | Weak ETag list comparison including wildcard `*`; match -> `304 Not Modified`; takes precedence over `If-Modified-Since` | Implemented |
+| `Accept-Encoding` | Feature-stored | `CFG_FEAT_COMPRESSION` | Precompressed sibling selection (`.br`/`.gz`) for compressible static assets with `Content-Encoding` emission; `Vary: Accept-Encoding` emitted for both encoded and identity responses on compressible types; range requests bypass compressed variant selection; on-the-fly gzip (always) and brotli (when built with `HAVE_BROTLI`) compression for assets without a precompressed sibling when `compression_dynamic` is enabled | Implemented |
 | `Authorization` | Feature-stored | `CFG_FEAT_AUTH` | Captured only; no auth challenge/allow/deny policy engine yet | Captured, semantics pending |
 | `Cookie` | Feature-stored | `CFG_FEAT_AUTH` | Captured only; no auth/session policy evaluator yet | Captured, semantics pending |
 
@@ -70,13 +70,14 @@ Included headers:
 
 Current effect:
 
-- Header capture only.
-
-Not yet implemented:
-
-- Byte-range parser and satisfiable-range checks.
-- `206 Partial Content` and `416 Range Not Satisfiable` behavior.
-- `Content-Range` generation and conditional range semantics with validators.
+- Single byte-range parsed and evaluated against file size.
+- Satisfiable range -> `206 Partial Content` with `Content-Range: bytes start-end/total` and correct `Content-Length`.
+- Unsatisfiable range -> `416 Range Not Satisfiable` with `Content-Range: bytes */total` and zero-length body.
+- Multi-range and syntactically invalid `Range` values fall back to `200` full response.
+- `If-Range` ETag match gates range response; mismatch falls back to `200` full response.
+- `Accept-Ranges: bytes` advertised on all static `200` and `206` responses.
+- TLS connections use buffered read path (kernel sendfile bypassed to preserve TLS framing).
+- `ETag` included on `206` responses for downstream cache coherence.
 
 ### `conditional`
 
@@ -87,13 +88,12 @@ Included headers:
 
 Current effect:
 
-- Header capture only.
-
-Not yet implemented:
-
-- Validator model (mtime and/or ETag source of truth).
-- Precondition evaluation and `304 Not Modified` flow.
-- Strong/weak ETag policy and precedence rules.
+- ETag derived from inode, size, mtime (nanoseconds); emitted as `ETag` on all static responses.
+- `Last-Modified` emitted as IMF-fixdate on all static responses.
+- `If-None-Match`: weak ETag list comparison including wildcard `*`; match -> `304 Not Modified` (no body, no `Content-Type`).
+- `If-Modified-Since`: file mtime compared against parsed IMF-fixdate; not-modified -> `304`.
+- RFC 7232 precedence enforced: `If-None-Match` present -> `If-Modified-Since` ignored.
+- `304` responses include `ETag` and `Last-Modified` but omit `Content-Type` and body.
 
 ### `compression`
 
@@ -103,13 +103,23 @@ Included headers:
 
 Current effect:
 
-- Header capture only.
+- `Accept-Encoding` parsing drives precompressed static sibling selection.
+- Encoded responses emit `Content-Encoding` (`br` or `gzip`) and `Vary: Accept-Encoding`.
+- Identity responses for compressible MIME types also emit `Vary: Accept-Encoding`.
+- Range requests and non-compressible MIME types bypass precompressed variant serving.
+
+Dynamic (on-the-fly) compression — enabled with `compression_dynamic = true`:
+
+- When no precompressed sibling exists and the client sends `Accept-Encoding: gzip`, the file is compressed in memory before sending.
+- File size must be within `compression_dynamic_min_bytes` (default 256 B) and `compression_dynamic_max_bytes` (default 1 MiB) to be eligible; outside that window the file is served uncompressed.
+- Compression effort is controlled by `compression_dynamic_effort` (1–9, default 1); applies to all codecs (gzip level, brotli quality).
+- If the compressed output is not smaller than the original, the original is sent uncompressed.
+- Precompressed siblings take priority over dynamic compression when both would match.
+- Brotli (`br`) dynamic compression is guarded by `HAVE_BROTLI` at compile time; gzip is always available.
 
 Not yet implemented:
 
-- Encoding negotiation (`gzip`/`br`/etc.) decision engine.
-- Actual compression or precompressed-asset selection path.
-- `Content-Encoding` and `Vary: Accept-Encoding` response behavior.
+- Authentication backend/policy hooks (under `auth` flag).
 
 ### `auth`
 
@@ -130,10 +140,8 @@ Not yet implemented:
 
 ## 4) Known Gaps
 
-- Range semantics (`206`/`416` + `Content-Range`).
-- Conditional GET semantics (`304` + validator policy).
-- Compression semantics (encoding negotiation + response encoding path).
 - Auth semantics (challenge, authn/authz decisions).
+- `Cache-Control` / `Expires` response headers (freshness policy; currently clients use heuristic freshness based on `Last-Modified`).
 - Structured access-log formats beyond text (for example JSONL).
 
 ## 5) Access Logging

@@ -35,6 +35,10 @@ well-suited for exploring what an io_uring-native networking stack looks like in
   automatic sendfile selection for large responses, precompressed sibling
   selection (`.br`/`.gz`) from `Accept-Encoding`, and per-vhost docroot
   configuration.
+- **Dynamic on-the-fly compression** — gzip (always available) and brotli
+  (when built with brotli support) applied at response time for compressible
+  MIME types; configurable size window, compression level, and per-vhost
+  enable/disable. Precompressed siblings take priority over dynamic compression.
 - **Multi-vhost INI configuration** — workers, timeouts, ports, docroots, TLS
   settings, and logging knobs are all driven by a single `server.ini` file.
 - **Optional TLS** — build-time and runtime OpenSSL integration with per-vhost
@@ -48,10 +52,25 @@ well-suited for exploring what an io_uring-native networking stack looks like in
 
 ## Requirements
 
-- Linux kernel with io_uring support,
-- gcc,
-- make,
-- python3.
+- Linux kernel with io_uring support
+- gcc
+- make
+- python3
+
+**zlib** (required for dynamic gzip compression):
+- If `third_party/zlib/` contains the zlib source tree, `make` builds it
+  automatically with no system dependency.
+- Otherwise, `zlib1g-dev` (or equivalent) must be installed system-wide.
+  Absence causes a hard compile failure.
+
+**brotli** (optional — absence silently disables brotli compression):
+- If `third_party/brotli/` contains the brotli source tree, `make` builds it
+  automatically and the binary gains brotli support (`HAVE_BROTLI`).
+- Otherwise, the build probes `pkg-config libbrotlienc`. If found, brotli is
+  enabled via system libraries.
+- If neither is present, the binary is built without brotli. Dynamic
+  compression still works with gzip; brotli requests fall back to gzip or
+  identity. **No warning is emitted at build time.**
 
 Optional:
 - OpenSSL (for TLS-enabled build/runtime paths).

@@ -36,6 +36,8 @@ LLHTTP_DIR := third_party/llhttp
 INI_DIR    := third_party/inih
 OPENSSL_SRC_DIR := third_party/openssl
 OPENSSL_LOCAL_PREFIX := $(OPENSSL_SRC_DIR)/_install
+ZLIB_DIR   := third_party/zlib
+BROTLI_DIR := third_party/brotli
 
 # liburing wiring:
 # - If third_party/liburing exists, build/link that local copy.
@@ -88,7 +90,8 @@ BASE_CFLAGS := -O2 -g -Wall -Wextra -Wvla -pipe -fno-plt -fno-omit-frame-pointer
 			   -I"include" -I"." \
 			   $(LIBURING_CFLAGS) \
 			   -I"$(LLHTTP_DIR)/include" \
-			   -I"$(INI_DIR)"
+			   -I"$(INI_DIR)" \
+			   $(ZLIB_CFLAGS)
 
 # Tool-specific flags.
 TOOLS_CFLAGS := -O2 -g -Wall -Wextra -Wvla -std=$(CSTD)
@@ -129,6 +132,49 @@ TLS_CFLAGS += -I"$(OPENSSL_PREFIX)/include"
 TLS_LDFLAGS += -L"$(OPENSSL_PREFIX)/lib" -Wl,-rpath,"$(OPENSSL_PREFIX)/lib"
 endif
 
+# zlib wiring:
+# - If third_party/zlib/zlib.h exists (source tree present), build/link that local copy.
+# - Otherwise, link against system zlib (-lz).
+# zlib is a hard dependency for dynamic compression.
+ZLIB_CFLAGS :=
+ZLIB_LDFLAGS :=
+ZLIB_LDLIBS :=
+ZLIB_DEPS :=
+ZLIB_LINK_INPUTS :=
+ifneq ($(wildcard $(ZLIB_DIR)/zlib.h),)
+ZLIB_CFLAGS      := -I"$(ZLIB_DIR)"
+ZLIB_LDFLAGS     := -L"$(ZLIB_DIR)/_build"
+ZLIB_LDLIBS      := -lz
+ZLIB_DEPS        := $(ZLIB_DIR)/_build/libz.a
+ZLIB_LINK_INPUTS := "$(ZLIB_DIR)/_build/libz.a"
+else
+ZLIB_LDLIBS := -lz
+endif
+
+# Brotli wiring (optional):
+# - If third_party/brotli/c/include/brotli/encode.h exists (source tree present),
+#   set BROTLI_DEPS so make builds _build/libbrotlienc.a automatically.
+# - Otherwise, probe for system libbrotlienc via pkg-config.
+# - If neither is available, brotli support is disabled.
+BROTLI_CFLAGS      :=
+BROTLI_LDFLAGS     :=
+BROTLI_LDLIBS      :=
+BROTLI_DEPS        :=
+BROTLI_LINK_INPUTS :=
+ifneq ($(wildcard $(BROTLI_DIR)/c/include/brotli/encode.h),)
+BROTLI_CFLAGS      := -DHAVE_BROTLI -isystem "$(BROTLI_DIR)/c/include"
+BROTLI_LDFLAGS     := -L"$(BROTLI_DIR)/_build"
+BROTLI_LDLIBS      := -lbrotlienc -lbrotlicommon -lm
+BROTLI_DEPS        := $(BROTLI_DIR)/_build/libbrotlienc.a
+BROTLI_LINK_INPUTS := "$(BROTLI_DIR)/_build/libbrotlienc.a" "$(BROTLI_DIR)/_build/libbrotlicommon.a"
+else
+BROTLI_PKG := $(shell pkg-config --exists libbrotlienc 2>/dev/null && echo yes)
+ifeq ($(BROTLI_PKG),yes)
+BROTLI_CFLAGS  := -DHAVE_BROTLI $(shell pkg-config --cflags libbrotlienc)
+BROTLI_LDLIBS  := $(shell pkg-config --libs libbrotlienc)
+endif
+endif
+
 # Stamp file so APP_DEFS changes rebuild binaries.
 APP_DEFS_STAMP := $(BUILD)/.app_defs
 
@@ -140,13 +186,15 @@ APP_CFLAGS := $(BASE_CFLAGS) -std=$(CSTD) -Wshadow -Werror $(SAN_CFLAGS) \
               -DINSTRUMENTATION_LEVEL=$(INSTRUMENTATION_LEVEL) \
 			  -DRING_OPS_INLINE=$(RING_OPS_INLINE) \
 			  $(TLS_CFLAGS) \
+			  $(ZLIB_CFLAGS) \
+			  $(BROTLI_CFLAGS) \
 			  $(APP_DEFS)
 
 # llhttp-specific flags (no -Werror).
 LLHTTP_CFLAGS := $(BASE_CFLAGS) -std=$(CSTD) -Wno-unused-parameter $(SAN_CFLAGS)
 
-LDFLAGS    := $(SAN_LDFLAGS) -rdynamic $(TLS_LDFLAGS)
-LDLIBS     := -lpthread $(TLS_LDLIBS)
+LDFLAGS    := $(SAN_LDFLAGS) -rdynamic $(TLS_LDFLAGS) $(ZLIB_LDFLAGS) $(BROTLI_LDFLAGS)
+LDLIBS     := -lpthread $(TLS_LDLIBS) $(ZLIB_LDLIBS) $(BROTLI_LDLIBS)
 
 STATIC_LIB_LLHTTP := $(BUILD)/libllhttp.a
 
@@ -165,7 +213,8 @@ LOGGER_OBJ    := $(patsubst %.c,$(BUILD)/app/%.o,$(LOGGER_SRC))
 
 # $(LIBURING_DEPS) is order-only so the liburing sub-build (which regenerates
 # compat.h via configure) finishes before we include its headers.
-$(BUILD)/app/%.o: %.c $(APP_DEFS_STAMP) | $(LIBURING_DEPS) $(BUILD)/app $(BUILD)/app/src
+# $(ZLIB_DEPS) is order-only for the same reason (zlib.h may need configure output).
+$(BUILD)/app/%.o: %.c $(APP_DEFS_STAMP) | $(LIBURING_DEPS) $(ZLIB_DEPS) $(BUILD)/app $(BUILD)/app/src
 	@mkdir -p $(dir $@)
 	$(CC) $(APP_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -179,7 +228,7 @@ gates: $(BUILD)/$(APP_GATES)
 pipeline_test: $(BUILD)/pipeline_test
 
 $(BUILD)/pipeline_test: tests/integration/pipeline_coalesce_test.c | $(BUILD)
-	$(CC) $(TOOLS_CFLAGS) -o $@ $<
+	$(CC) $(TOOLS_CFLAGS) $(BROTLI_CFLAGS) -o $@ $<
 
 .PHONY: bench
 bench: $(TOOLS_BIN)
@@ -213,18 +262,18 @@ itest-tls:
 	@$(MAKE) -B ENABLE_TLS=1 $(BUILD)/$(APP_ITEST) && \
 	OPENSSL_PREFIX="$(OPENSSL_PREFIX)" bash tests/integration/run_tls_integration_tests.sh "$(BUILD)/$(APP_ITEST)" "$(TLS_ITEST_PORT)"
 
-$(BUILD)/$(APP): $(APP_DEFS_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
-	$(CC) $(APP_CFLAGS) -o $@ $(APP_OBJ) $(LOGGER_OBJ) $(LIBURING_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
+$(BUILD)/$(APP): $(APP_DEFS_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+	$(CC) $(APP_CFLAGS) -o $@ $(APP_OBJ) $(LOGGER_OBJ) $(LIBURING_LINK_INPUTS) $(ZLIB_LINK_INPUTS) $(BROTLI_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
-$(BUILD)/$(APP_GATES): $(APP_DEFS_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
-	$(CC) $(APP_CFLAGS) -o $@ $(APP_OBJ) $(LOGGER_OBJ) $(LIBURING_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
+$(BUILD)/$(APP_GATES): $(APP_DEFS_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+	$(CC) $(APP_CFLAGS) -o $@ $(APP_OBJ) $(LOGGER_OBJ) $(LIBURING_LINK_INPUTS) $(ZLIB_LINK_INPUTS) $(BROTLI_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
 # itest uses extra -D flags that differ from the main build, so it compiles
 # from source rather than reusing main app objects.
-$(BUILD)/$(APP_ITEST): $(APP_DEFS_STAMP) $(SRC_ITEST) $(LOGGER_SRC) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+$(BUILD)/$(APP_ITEST): $(APP_DEFS_STAMP) $(SRC_ITEST) $(LOGGER_SRC) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
 	$(CC) $(APP_CFLAGS) -o $@ $(SRC_ITEST) $(LOGGER_SRC) \
 		-DBODY_TIMEOUT_MS=200 -DMAX_BODY_BYTES=32 -DENABLE_ITEST_ECHO=1 -DACCESS_LOG_ENABLE_TEST_HOOKS=1 \
-		$(LIBURING_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
+		$(LIBURING_LINK_INPUTS) $(ZLIB_LINK_INPUTS) $(BROTLI_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
 $(APP_DEFS_STAMP): FORCE | $(BUILD)
 	@tmp="$@.tmp"; \
@@ -237,6 +286,43 @@ $(APP_DEFS_STAMP): FORCE | $(BUILD)
 
 $(LIBUR_DIR)/src/liburing.a:
 	$(MAKE) -C "$(LIBUR_DIR)"
+
+ZLIB_SRC := $(wildcard $(ZLIB_DIR)/*.c)
+
+$(ZLIB_DIR)/_build/libz.a: $(ZLIB_SRC)
+	@if [ ! -f "$(ZLIB_DIR)/zlib.h" ]; then \
+		echo "zlib source tree not found at $(ZLIB_DIR)"; exit 1; \
+	fi
+	@mkdir -p "$(ZLIB_DIR)/_build"
+	@for f in $(ZLIB_SRC); do \
+		$(CC) -O2 -I"$(ZLIB_DIR)" -DHAVE_UNISTD_H -c "$$f" -o "$(ZLIB_DIR)/_build/$$(basename $$f .c).o"; \
+	done
+	ar rcs "$(ZLIB_DIR)/_build/libz.a" $(ZLIB_DIR)/_build/*.o
+
+BROTLI_COMMON_SRC := $(wildcard $(BROTLI_DIR)/c/common/*.c)
+BROTLI_ENC_SRC    := $(wildcard $(BROTLI_DIR)/c/enc/*.c)
+BROTLI_DEC_SRC    := $(wildcard $(BROTLI_DIR)/c/dec/*.c)
+BROTLI_BUILD_DIR  := $(BROTLI_DIR)/_build
+
+$(BROTLI_DIR)/_build/libbrotlienc.a: $(BROTLI_COMMON_SRC) $(BROTLI_ENC_SRC) $(BROTLI_DEC_SRC)
+	@if [ ! -f "$(BROTLI_DIR)/c/include/brotli/encode.h" ]; then \
+		echo "Brotli source tree not found at $(BROTLI_DIR)"; exit 1; \
+	fi
+	@mkdir -p "$(BROTLI_BUILD_DIR)/common" "$(BROTLI_BUILD_DIR)/enc" "$(BROTLI_BUILD_DIR)/dec"
+	@for f in $(BROTLI_COMMON_SRC); do \
+		$(CC) -O2 -I"$(BROTLI_DIR)/c/include" -c "$$f" -o "$(BROTLI_BUILD_DIR)/common/$$(basename $$f .c).o"; \
+	done
+	@for f in $(BROTLI_ENC_SRC); do \
+		$(CC) -O2 -I"$(BROTLI_DIR)/c/include" -c "$$f" -o "$(BROTLI_BUILD_DIR)/enc/$$(basename $$f .c).o"; \
+	done
+	@for f in $(BROTLI_DEC_SRC); do \
+		$(CC) -O2 -I"$(BROTLI_DIR)/c/include" -c "$$f" -o "$(BROTLI_BUILD_DIR)/dec/$$(basename $$f .c).o"; \
+	done
+	ar rcs "$(BROTLI_BUILD_DIR)/libbrotlicommon.a" $(BROTLI_BUILD_DIR)/common/*.o
+	ar rcs "$(BROTLI_BUILD_DIR)/libbrotlienc.a"    $(BROTLI_BUILD_DIR)/enc/*.o
+	ar rcs "$(BROTLI_BUILD_DIR)/libbrotlidec.a"    $(BROTLI_BUILD_DIR)/dec/*.o
+
+$(BROTLI_DIR)/_build/libbrotlidec.a: $(BROTLI_DIR)/_build/libbrotlienc.a
 
 .PHONY: check-system-liburing-version
 check-system-liburing-version: | $(BUILD)
@@ -332,6 +418,22 @@ $(BUILD):
 clean:
 	$(MAKE) -C "$(LIBUR_DIR)" clean || true
 	rm -rf "$(BUILD_BASE)"
+
+.PHONY: brotli-local brotli-local-clean
+brotli-local: $(BROTLI_DIR)/_build/libbrotlienc.a
+	@echo "Local brotli built at $(BROTLI_DIR)/_build/"
+	@echo "Rebuild lamseryn with: make -j$$(nproc)"
+
+brotli-local-clean:
+	rm -rf "$(BROTLI_DIR)/_build"
+
+.PHONY: zlib-local zlib-local-clean
+zlib-local: $(ZLIB_DIR)/_build/libz.a
+	@echo "Local zlib built at $(ZLIB_DIR)/_build/"
+	@echo "Rebuild lamseryn with: make -j$$(nproc)"
+
+zlib-local-clean:
+	rm -rf "$(ZLIB_DIR)/_build"
 
 .PHONY: openssl-local openssl-local-clean
 openssl-local:
