@@ -3043,6 +3043,190 @@ static int test_dynamic_compression(const char *host, const char *port,
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// header_set integration test.
+// Verifies that custom response headers configured via `header_set` INI keys
+// are emitted verbatim on static response codes: 200, HEAD, 304, and 206.
+// ---------------------------------------------------------------------------
+
+static int test_header_set(const char *host, const char *port,
+                           int nodelay, int timeout_ms, int verbose) {
+  // ---- Sub-test 1: custom headers present on 200 GET ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /index.html HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("header-set: GET expected 200, got %d", st);
+    char v1[128];
+    if (parse_header_value_simple(hdrs, "X-Header-Set-Test", v1, sizeof(v1)) != 0)
+      die("header-set: 200 missing X-Header-Set-Test header");
+    if (strcmp(v1, "hello") != 0)
+      die("header-set: 200 X-Header-Set-Test expected 'hello', got '%s'", v1);
+    char v2[128];
+    if (parse_header_value_simple(hdrs, "X-Frame-Options", v2, sizeof(v2)) != 0)
+      die("header-set: 200 missing X-Frame-Options header");
+    if (strcmp(v2, "DENY") != 0)
+      die("header-set: 200 X-Frame-Options expected 'DENY', got '%s'", v2);
+    if (verbose)
+      info("header-set: 200 GET OK (X-Header-Set-Test=%s, X-Frame-Options=%s)", v1, v2);
+  }
+
+  // ---- Sub-test 2: custom headers present on HEAD ----
+  // HEAD responses have no body.  We read until \r\n\r\n then inspect the
+  // raw header block directly (without draining a body that never arrives).
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "HEAD /index.html HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    if (send_all(fd, req, strlen(req)) < 0) {
+      close(fd);
+      die("header-set: HEAD send failed: %s", strerror(errno));
+    }
+
+    // Recv until the header separator is found.
+    static const char HSEP[] = "\r\n\r\n";
+    const size_t HSEP_LEN = 4;
+    size_t hdr_end = (size_t)-1;
+    for (;;) {
+      if (hdr_end == (size_t)-1) {
+        for (size_t i = 0; i + HSEP_LEN <= g_len; i++) {
+          if (memcmp(g_buf + i, HSEP, HSEP_LEN) == 0) {
+            hdr_end = i + HSEP_LEN;
+            break;
+          }
+        }
+      }
+      if (hdr_end != (size_t)-1) break;
+      if (g_len == sizeof(g_buf)) { close(fd); die("header-set: HEAD buf full"); }
+      ssize_t r = recv(fd, g_buf + g_len, sizeof(g_buf) - g_len, 0);
+      if (r < 0) { if (errno == EINTR) continue; close(fd); die("header-set: HEAD recv: %s", strerror(errno)); }
+      if (r == 0) break; // EOF — server closed after headers
+      g_len += (size_t)r;
+    }
+    if (hdr_end == (size_t)-1) { close(fd); die("header-set: HEAD no \\r\\n\\r\\n found"); }
+
+    char hdrs[4096];
+    size_t copy = hdr_end < sizeof(hdrs) - 1 ? hdr_end : sizeof(hdrs) - 1;
+    memcpy(hdrs, g_buf, copy);
+    hdrs[copy] = '\0';
+    close(fd);
+
+    int st = parse_status_code(hdrs);
+    if (st != 200)
+      die("header-set: HEAD expected 200, got %d", st);
+    char v1[128];
+    if (parse_header_value_simple(hdrs, "X-Header-Set-Test", v1, sizeof(v1)) != 0)
+      die("header-set: HEAD missing X-Header-Set-Test header");
+    if (strcmp(v1, "hello") != 0)
+      die("header-set: HEAD X-Header-Set-Test expected 'hello', got '%s'", v1);
+    char v2[128];
+    if (parse_header_value_simple(hdrs, "X-Frame-Options", v2, sizeof(v2)) != 0)
+      die("header-set: HEAD missing X-Frame-Options header");
+    if (strcmp(v2, "DENY") != 0)
+      die("header-set: HEAD X-Frame-Options expected 'DENY', got '%s'", v2);
+    if (verbose)
+      info("header-set: HEAD OK");
+  }
+
+  // ---- Sub-test 3: custom headers present on 304 ----
+  // First GET to obtain the ETag, then re-request with If-None-Match.
+  {
+    char etag[128] = {0};
+    {
+      g_len = 0;
+      int fd = connect_tcp(host, port, nodelay, timeout_ms);
+      const char *req =
+        "GET /index.html HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+      char hdrs[4096];
+      long cl = 0;
+      int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+      close(fd);
+      if (st != 200)
+        die("header-set: pre-304 GET expected 200, got %d", st);
+      if (parse_header_value_simple(hdrs, "ETag", etag, sizeof(etag)) != 0)
+        die("header-set: pre-304 GET missing ETag (conditional feature enabled?)");
+    }
+    {
+      g_len = 0;
+      int fd = connect_tcp(host, port, nodelay, timeout_ms);
+      char req[512];
+      snprintf(req, sizeof(req),
+               "GET /index.html HTTP/1.1\r\n"
+               "Host: example.com\r\n"
+               "If-None-Match: %s\r\n"
+               "Connection: close\r\n"
+               "\r\n", etag);
+      char hdrs[4096];
+      long cl = 0;
+      int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+      close(fd);
+      if (st != 304)
+        die("header-set: 304 expected 304, got %d", st);
+      char v1[128];
+      if (parse_header_value_simple(hdrs, "X-Header-Set-Test", v1, sizeof(v1)) != 0)
+        die("header-set: 304 missing X-Header-Set-Test header");
+      if (strcmp(v1, "hello") != 0)
+        die("header-set: 304 X-Header-Set-Test expected 'hello', got '%s'", v1);
+      char v2[128];
+      if (parse_header_value_simple(hdrs, "X-Frame-Options", v2, sizeof(v2)) != 0)
+        die("header-set: 304 missing X-Frame-Options header");
+      if (strcmp(v2, "DENY") != 0)
+        die("header-set: 304 X-Frame-Options expected 'DENY', got '%s'", v2);
+      if (verbose)
+        info("header-set: 304 OK");
+    }
+  }
+
+  // ---- Sub-test 4: custom headers present on 206 (Range) ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /index.html HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Range: bytes=0-4\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 206)
+      die("header-set: 206 expected 206, got %d", st);
+    char v1[128];
+    if (parse_header_value_simple(hdrs, "X-Header-Set-Test", v1, sizeof(v1)) != 0)
+      die("header-set: 206 missing X-Header-Set-Test header");
+    if (strcmp(v1, "hello") != 0)
+      die("header-set: 206 X-Header-Set-Test expected 'hello', got '%s'", v1);
+    char v2[128];
+    if (parse_header_value_simple(hdrs, "X-Frame-Options", v2, sizeof(v2)) != 0)
+      die("header-set: 206 missing X-Frame-Options header");
+    if (strcmp(v2, "DENY") != 0)
+      die("header-set: 206 X-Frame-Options expected 'DENY', got '%s'", v2);
+    if (verbose)
+      info("header-set: 206 OK");
+  }
+
+  info("header-set: OK (4 sub-tests)");
+  return 0;
+}
+
 static int test_precompressed(const char *host, const char *port,
                               int nodelay, int timeout_ms, int verbose) {
   // gzip variant: Accept-Encoding: gzip and .gz sibling present.
@@ -3329,6 +3513,8 @@ static void usage(const char *prog) {
           "  conditional-304 [-H host] [-P port] [--nodelay] [-v]\n"
           "  range-requests [-H host] [-P port] [--nodelay] [-v]\n"
           "  precompressed [-H host] [-P port] [--nodelay] [-v]\n"
+          "  dynamic-compression [-H host] [-P port] [--nodelay] [-v]\n"
+          "  header-set [-H host] [-P port] [--nodelay] [-v]\n"
           "Options:\n"
           "  -H host       Default 127.0.0.1\n"
           "  -P port       Default 8090\n"
@@ -3572,6 +3758,10 @@ int main(int argc, char **argv) {
 
   if (!strcmp(mode, "dynamic-compression")) {
     return test_dynamic_compression(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "header-set")) {
+    return test_header_set(host, port, nodelay, timeout_ms, verbose);
   }
 
   usage(argv[0]);

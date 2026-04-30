@@ -131,6 +131,7 @@ start_server() {
   local access_log_enabled=${2:-false}
   local access_log_path=${3:-stderr}
   local compression_dynamic=${4:-false}
+  local extra_vhost_ini=${5:-}
   local static=true
   local range=false
   local conditional=false
@@ -175,6 +176,7 @@ compression = $compression
 auth = $auth
 compression_dynamic = $compression_dynamic
 max_header_fields = 100
+${extra_vhost_ini}
 EOF
 
   echo "[itest] starting server: $SERVER_BIN (workers=$THREADS port=$PORT features=${features:-default} config=$ITEST_INI)" >&2
@@ -750,5 +752,11 @@ stop_server
 start_server "all" "false" "stderr" "true"
 echo "[itest] running dynamic compression (compression_dynamic=true)" >&2
 DOCROOT="$DOCROOT" run_client dynamic-compression --nodelay
+
+stop_server
+start_server "all" "false" "stderr" "false" \
+  "$(printf 'header_set = X-Header-Set-Test: hello\nheader_set = X-Frame-Options: DENY')"
+echo "[itest] running header_set custom response headers" >&2
+run_client header-set --nodelay
 
 echo "[itest] OK" >&2

@@ -102,6 +102,11 @@ struct vhost_t {
   unsigned comp_dynamic_max_bytes; // max file size eligible (default 1 MiB)
   unsigned comp_dynamic_min_bytes; // min file size eligible (default 256 B)
   unsigned comp_dynamic_effort;   // compression effort 1-9: gzip level, brotli quality (default 1)
+
+  // Custom response headers emitted on all static responses.
+  // Each entry is a pre-formatted "Header-Name: value\r\n" string.
+  char *custom_headers[16];       // max 16 custom headers per vhost
+  unsigned custom_headers_count;
 };
 
 enum {

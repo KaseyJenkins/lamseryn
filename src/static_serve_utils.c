@@ -506,7 +506,7 @@ int static_serve_tx_set_dynamic_response_ex(struct conn *c,
   return 0;
 }
 
-// Builds optional static-response headers (validators, Accept-Ranges, Content-Encoding, Vary).
+// Builds optional static-response headers (validators, Accept-Ranges, Content-Encoding, Vary, custom headers).
 // Returns bytes written and exports ETag for later conditional checks.
 // If Content-Encoding cannot fit, clears serving_enc so caller falls back to identity file.
 static size_t static_serve_assemble_extra_headers(
@@ -515,6 +515,7 @@ static size_t static_serve_assemble_extra_headers(
     uint64_t features,
     unsigned *serving_enc,
     const char *ctype,
+    char *const *custom_headers, unsigned custom_headers_count,
     char *etag_out, size_t etag_outsz, size_t *etag_out_len) {
   char last_mod_buf[64];
   size_t last_mod_len = 0;
@@ -570,6 +571,18 @@ static size_t static_serve_assemble_extra_headers(
     if (vhdr_len + vary_len < bufsz) {
       memcpy(buf + vhdr_len, vary_hdr, vary_len);
       vhdr_len += vary_len;
+      buf[vhdr_len] = '\0';
+    }
+  }
+  for (unsigned i = 0; i < custom_headers_count; i++) {
+    const char *hdr = custom_headers[i];
+    if (!hdr) {
+      continue;
+    }
+    size_t hlen = strlen(hdr);
+    if (vhdr_len + hlen < bufsz) {
+      memcpy(buf + vhdr_len, hdr, hlen);
+      vhdr_len += hlen;
       buf[vhdr_len] = '\0';
     }
   }
@@ -665,11 +678,14 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
 
     char etag_buf[64];
     size_t etag_len = 0;
-    char validator_hdrs[256];
+    char validator_hdrs[2048];
     unsigned orig_serving_enc = serving_enc;
+    char *const *custom_hdrs = vh ? (char *const *)vh->custom_headers : NULL;
+    unsigned custom_hdrs_n = vh ? vh->custom_headers_count : 0;
     (void)static_serve_assemble_extra_headers(
       validator_hdrs, sizeof(validator_hdrs),
       &st, vh ? vh->features : 0, &serving_enc, ctype,
+      custom_hdrs, custom_hdrs_n,
       etag_buf, sizeof(etag_buf), &etag_len);
     if (orig_serving_enc && !serving_enc) {
       // Content-Encoding header didn't fit — reopen the original
@@ -780,7 +796,7 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
             size_t cr_len = http_range_format_content_range(
               cr_buf, sizeof(cr_buf), rr.start, rr.end, (uint64_t)fsz);
             // Build extra headers for 206.
-            char extra_206[512];
+            char extra_206[sizeof(validator_hdrs) + 256];
             int elen = snprintf(extra_206, sizeof(extra_206), "%.*s%s",
                                 (int)cr_len, cr_buf, validator_hdrs);
             if (elen <= 0 || (size_t)elen >= sizeof(extra_206)) {
@@ -999,7 +1015,8 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
           // for dynamically compressed responses (validator_hdrs was assembled
           // with serving_enc == 0 and does not include them).
           const char *resp_extra = validator_hdrs;
-          char dyn_extra[512];
+          // Sized to always hold CE line (~30 bytes) + full validator_hdrs buffer.
+          char dyn_extra[sizeof(validator_hdrs) + 64];
           if (serving_enc && !orig_serving_enc) {
             // validator_hdrs was built with serving_enc==0; for a compressible
             // MIME type it already contains "Vary: Accept-Encoding".  We only
@@ -1009,6 +1026,12 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
                              compress_enc_name(serving_enc), validator_hdrs);
             if (n > 0 && (size_t)n < sizeof(dyn_extra)) {
               resp_extra = dyn_extra;
+            } else {
+              // Unreachable: buffer is sized to always fit.  If somehow
+              // hit, abort this response rather than serve compressed
+              // bytes without Content-Encoding.
+              free(file_buf);
+              break;
             }
           }
 

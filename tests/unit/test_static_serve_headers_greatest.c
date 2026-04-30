@@ -91,7 +91,7 @@ TEST t_bare_static_no_etag_no_lastmod(void) {
   unsigned enc = 0;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT_EQ(n, 0);
   ASSERT_EQ(etag_len, 0);
   ASSERT_STR_EQ(buf, "");
@@ -105,7 +105,7 @@ TEST t_conditional_emits_etag_and_lastmod(void) {
   unsigned enc = 0;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC | CFG_FEAT_CONDITIONAL, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT(n > 0);
   ASSERT(etag_len > 0);
   ASSERT(strstr(buf, "ETag:") != NULL);
@@ -124,7 +124,7 @@ TEST t_range_only_emits_accept_ranges(void) {
   unsigned enc = 0;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC | CFG_FEAT_RANGE, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT(n > 0);
   ASSERT_EQ(etag_len, 0);
   ASSERT(strstr(buf, "Accept-Ranges: bytes") != NULL);
@@ -143,7 +143,7 @@ TEST t_compression_gzip_without_conditional(void) {
   unsigned enc = COMP_ENC_GZIP;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC | CFG_FEAT_COMPRESSION, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT(n > 0);
   ASSERT(strstr(buf, "Content-Encoding: gzip") != NULL);
   ASSERT(strstr(buf, "Vary: Accept-Encoding") != NULL);
@@ -159,7 +159,7 @@ TEST t_compression_brotli_without_conditional(void) {
   unsigned enc = COMP_ENC_BROTLI;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC | CFG_FEAT_COMPRESSION, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT(n > 0);
   ASSERT(strstr(buf, "Content-Encoding: br") != NULL);
   ASSERT(strstr(buf, "Vary: Accept-Encoding") != NULL);
@@ -175,7 +175,7 @@ TEST t_vary_identity_without_conditional(void) {
   unsigned enc = 0;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC | CFG_FEAT_COMPRESSION, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT(n > 0);
   ASSERT(strstr(buf, "Vary: Accept-Encoding") != NULL);
   ASSERT(strstr(buf, "Content-Encoding:") == NULL);
@@ -190,7 +190,7 @@ TEST t_compression_noncompressible_no_vary(void) {
   unsigned enc = 0;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC | CFG_FEAT_COMPRESSION, &enc,
-    "image/jpeg", etag, sizeof(etag), &etag_len);
+    "image/jpeg", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT_EQ(n, 0);
   ASSERT_STR_EQ(buf, "");
   PASS();
@@ -209,7 +209,7 @@ TEST t_all_flags_identity(void) {
                     | CFG_FEAT_RANGE | CFG_FEAT_COMPRESSION;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, features, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT(n > 0);
   ASSERT(etag_len > 0);
   ASSERT(strstr(buf, "ETag:") != NULL);
@@ -229,7 +229,7 @@ TEST t_all_flags_gzip(void) {
                     | CFG_FEAT_RANGE | CFG_FEAT_COMPRESSION;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, features, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT(n > 0);
   ASSERT(strstr(buf, "ETag:") != NULL);
   ASSERT(strstr(buf, "Accept-Ranges: bytes") != NULL);
@@ -246,7 +246,7 @@ TEST t_no_duplicate_vary(void) {
   unsigned enc = COMP_ENC_GZIP;
   size_t n = static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC | CFG_FEAT_COMPRESSION, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT(n > 0);
   // Count occurrences of "Vary:" — should be exactly 1
   int count = 0;
@@ -265,8 +265,56 @@ TEST t_ce_overflow_clears_serving_enc(void) {
   unsigned enc = COMP_ENC_GZIP;
   (void)static_serve_assemble_extra_headers(
     buf, sizeof(buf), &st, CFG_FEAT_STATIC | CFG_FEAT_COMPRESSION, &enc,
-    "text/html", etag, sizeof(etag), &etag_len);
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
   ASSERT_EQ(enc, 0);
+  PASS();
+}
+
+// ===========================================================================
+// Custom headers (header_set): emitted verbatim
+// ===========================================================================
+
+TEST t_custom_header_emits_verbatim(void) {
+  struct stat st = make_stat(1, 100, 1000, 0);
+  char buf[512], etag[64];
+  size_t etag_len = 0;
+  unsigned enc = 0;
+  char *hdrs[] = {"Cache-Control: public, max-age=3600\r\n"};
+  size_t n = static_serve_assemble_extra_headers(
+    buf, sizeof(buf), &st, CFG_FEAT_STATIC, &enc,
+    "text/html", hdrs, 1, etag, sizeof(etag), &etag_len);
+  ASSERT(n > 0);
+  ASSERT(strstr(buf, "Cache-Control: public, max-age=3600\r\n") != NULL);
+  PASS();
+}
+
+TEST t_custom_header_multiple(void) {
+  struct stat st = make_stat(1, 100, 1000, 0);
+  char buf[512], etag[64];
+  size_t etag_len = 0;
+  unsigned enc = 0;
+  char *hdrs[] = {
+    "Cache-Control: no-cache\r\n",
+    "X-Content-Type-Options: nosniff\r\n"
+  };
+  size_t n = static_serve_assemble_extra_headers(
+    buf, sizeof(buf), &st, CFG_FEAT_STATIC, &enc,
+    "text/html", hdrs, 2, etag, sizeof(etag), &etag_len);
+  ASSERT(n > 0);
+  ASSERT(strstr(buf, "Cache-Control: no-cache\r\n") != NULL);
+  ASSERT(strstr(buf, "X-Content-Type-Options: nosniff\r\n") != NULL);
+  PASS();
+}
+
+TEST t_custom_header_null_ptr_zero_count(void) {
+  struct stat st = make_stat(1, 100, 1000, 0);
+  char buf[256], etag[64];
+  size_t etag_len = 0;
+  unsigned enc = 0;
+  (void)static_serve_assemble_extra_headers(
+    buf, sizeof(buf), &st, CFG_FEAT_STATIC, &enc,
+    "text/html", NULL, 0, etag, sizeof(etag), &etag_len);
+  ASSERT(strstr(buf, "Cache-Control:") == NULL);
   PASS();
 }
 
@@ -291,10 +339,17 @@ SUITE(s_combined) {
   RUN_TEST(t_ce_overflow_clears_serving_enc);
 }
 
+SUITE(s_custom_headers) {
+  RUN_TEST(t_custom_header_emits_verbatim);
+  RUN_TEST(t_custom_header_multiple);
+  RUN_TEST(t_custom_header_null_ptr_zero_count);
+}
+
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv) {
   GREATEST_MAIN_BEGIN();
   RUN_SUITE(s_flag_independence);
   RUN_SUITE(s_combined);
+  RUN_SUITE(s_custom_headers);
   GREATEST_MAIN_END();
 }

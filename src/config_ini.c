@@ -754,6 +754,77 @@ static int on_kv(void *user, const char *section, const char *name, const char *
     vh->vf_present |= VF_COMP_DYN_LEVEL;
     return 1;
   }
+  if (!strcasecmp(name, "header_set")) {
+    if (!value || !value[0]) {
+      LOGW(LOGC_CORE, "empty header_set value; ignored");
+      return 1;
+    }
+    // Validate: must contain ':', no CR/LF injection.
+    const char *colon = strchr(value, ':');
+    if (!colon || colon == value) {
+      LOGW(LOGC_CORE,
+           "invalid header_set '%s': expected 'Header-Name: value'",
+           value);
+      return 1;
+    }
+    for (const char *p = value; *p; p++) {
+      if (*p == '\r' || *p == '\n') {
+        LOGW(LOGC_CORE,
+             "invalid header_set: CR/LF in value; ignored");
+        return 1;
+      }
+    }
+    // Validate header name chars (token per RFC 7230).
+    for (const char *p = value; p < colon; p++) {
+      unsigned char ch = (unsigned char)*p;
+      if (ch <= 32 || ch == 127 || ch == '(' || ch == ')' || ch == '<'
+          || ch == '>' || ch == '@' || ch == ',' || ch == ';'
+          || ch == '\\' || ch == '"' || ch == '/' || ch == '['
+          || ch == ']' || ch == '?' || ch == '=' || ch == '{'
+          || ch == '}') {
+        LOGW(LOGC_CORE,
+             "invalid header_set: bad character in header name; ignored");
+        return 1;
+      }
+    }
+    if (vh->custom_headers_count >= 16) {
+      LOGW(LOGC_CORE,
+           "header_set: max 16 custom headers per vhost; '%s' ignored",
+           value);
+      return 1;
+    }
+    size_t vlen = strlen(value);
+    if (vlen > 1024) {
+      LOGW(LOGC_CORE,
+           "header_set value too long (%zu bytes, max 1024); ignored", vlen);
+      return 1;
+    }
+    // Enforce total byte budget: all custom headers must fit in the
+    // response emit buffer alongside built-in headers (~200 bytes).
+    // Budget of 1536 bytes ensures they always fit in the 2048-byte buffer.
+    size_t emit_len = vlen + 2; // this entry after \r\n appended
+    for (unsigned i = 0; i < vh->custom_headers_count; i++) {
+      emit_len += strlen(vh->custom_headers[i]);
+    }
+    if (emit_len > 1536) {
+      LOGW(LOGC_CORE,
+           "header_set: total custom header bytes (%zu) exceeds budget (1536); '%s' ignored",
+           emit_len, value);
+      return 1;
+    }
+    // Store as "Header-Name: value\r\n" for direct emission.
+    size_t alloc_len = vlen + 2 + 1; // \r\n + NUL
+    char *entry = malloc(alloc_len);
+    if (!entry) {
+      return 1;
+    }
+    memcpy(entry, value, vlen);
+    entry[vlen] = '\r';
+    entry[vlen + 1] = '\n';
+    entry[vlen + 2] = '\0';
+    vh->custom_headers[vh->custom_headers_count++] = entry;
+    return 1;
+  }
 
   LOGW(LOGC_CORE, "unknown vhost key '%s'", name ? name : "(null)");
   return 1;

@@ -198,7 +198,7 @@ $(TEST_BIN_REQ_ARENA): unit/test_req_arena_greatest.c ../src/req_arena_stats.c |
 	$(CC) $(CFLAGS) -I vendor -o $@ $^
 
 $(TEST_BIN_CONFIG_INI): unit/test_config_ini_greatest.c ../src/config_ini.c ../src/logger.c ../third_party/inih/ini.c | $(BUILD)
-	$(CC) $(CFLAGS) -I vendor -o $@ $^
+	$(CC) $(CFLAGS) -DINI_MAX_LINE=2048 -I vendor -o $@ $^
 
 $(TEST_BIN_TX): unit/test_tx_greatest.c ../src/tx.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^

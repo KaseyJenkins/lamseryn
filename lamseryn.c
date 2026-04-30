@@ -1217,6 +1217,9 @@ int main(int argc, char **argv) {
     if (config.vhosts[i].docroot_fd >= 0) {
       close(config.vhosts[i].docroot_fd);
     }
+    for (unsigned h = 0; h < config.vhosts[i].custom_headers_count; h++) {
+      free(config.vhosts[i].custom_headers[h]);
+    }
   }
 
   for (int i = 0; i < config.vhost_count; ++i) {

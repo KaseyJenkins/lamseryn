@@ -1,6 +1,6 @@
 # HTTP Capability Matrix (Current vs Planned)
 
-Last updated: 2026-04-29
+Last updated: 2026-04-30
 
 ## Overview
 
@@ -30,6 +30,7 @@ This document is the inventory of:
 - Static routing for `GET`/`HEAD` to configured docroot.
 - Path normalization and traversal-safe resolution.
 - Response mode selection (`HEAD`, buffered send, sendfile).
+- Custom response headers via repeatable `header_set` INI key (up to 16 per vhost).
 
 ### Deadlines and resilience (implemented)
 
@@ -141,7 +142,6 @@ Not yet implemented:
 ## 4) Known Gaps
 
 - Auth semantics (challenge, authn/authz decisions).
-- `Cache-Control` / `Expires` response headers (freshness policy; currently clients use heuristic freshness based on `Last-Modified`).
 - Structured access-log formats beyond text (for example JSONL).
 
 ## 5) Access Logging

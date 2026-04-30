@@ -397,7 +397,7 @@ $(BUILD)/llhttp/%.o: $(LLHTTP_DIR)/src/%.c | $(BUILD)/llhttp
 	$(CC) $(LLHTTP_CFLAGS) -c $< -o $@
 
 $(INI_OBJ): $(INI_DIR)/ini.c | $(BUILD)/inih
-	$(CC) $(LLHTTP_CFLAGS) -c $< -o $@
+	$(CC) $(LLHTTP_CFLAGS) -DINI_MAX_LINE=2048 -c $< -o $@
 
 $(BUILD)/llhttp:
 	mkdir -p "$(BUILD)/llhttp"

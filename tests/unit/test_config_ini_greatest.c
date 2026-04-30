@@ -760,6 +760,182 @@ TEST t_tls_enabled_without_key_fails(void) {
   PASS();
 }
 
+// ===========================================================================
+// header_set parser validation
+// ===========================================================================
+
+TEST t_header_set_valid_stored(void) {
+  const char *ini = "[vhost hs]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8094\n"
+                    "header_set = Cache-Control: no-cache\n"
+                    "header_set = X-Frame-Options: DENY\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 2u);
+  ASSERT(strstr(cfg.vhosts[0].custom_headers[0], "Cache-Control: no-cache\r\n") != NULL);
+  ASSERT(strstr(cfg.vhosts[0].custom_headers[1], "X-Frame-Options: DENY\r\n") != NULL);
+
+  for (unsigned i = 0; i < cfg.vhosts[0].custom_headers_count; i++)
+    free(cfg.vhosts[0].custom_headers[i]);
+  unlink(path);
+  PASS();
+}
+
+TEST t_header_set_rejects_no_colon(void) {
+  const char *ini = "[vhost hs2]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8095\n"
+                    "header_set = InvalidNoColon\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  // Should be rejected — count stays 0.
+  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 0u);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_header_set_rejects_bad_token_char(void) {
+  const char *ini = "[vhost hs3]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8096\n"
+                    "header_set = Bad Name: value\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  // Space in header name is not a valid token character.
+  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 0u);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_header_set_rejects_crlf_injection(void) {
+  // Bare \r in middle of value — inih delivers it, our validator rejects.
+  const char *ini = "[vhost hs5]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8098\n"
+                    "header_set = X-Injected: foo\rbar\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  // Embedded CR must be rejected.
+  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 0u);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_header_set_rejects_overlength(void) {
+  // Build a header_set value > 1024 bytes.
+  char ini[2048];
+  size_t off = 0;
+  off += (size_t)snprintf(ini + off, sizeof(ini) - off,
+                          "[vhost hs6]\nbind = 127.0.0.1\nport = 8099\nheader_set = X-Long: ");
+  // Fill with 'A' to exceed 1024 total.
+  while (off < 1100 && off < sizeof(ini) - 2) {
+    ini[off++] = 'A';
+  }
+  ini[off++] = '\n';
+  ini[off] = '\0';
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  // Over-length must be rejected.
+  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 0u);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_header_set_max_16_enforced(void) {
+  char ini[4096];
+  size_t off = 0;
+  off += (size_t)snprintf(ini + off, sizeof(ini) - off,
+                          "[vhost hs4]\nbind = 127.0.0.1\nport = 8097\n");
+  for (int i = 0; i < 18; i++) {
+    off += (size_t)snprintf(ini + off, sizeof(ini) - off,
+                            "header_set = X-Hdr-%d: val\n", i);
+  }
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  // Only 16 stored, the rest ignored.
+  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 16u);
+
+  for (unsigned i = 0; i < cfg.vhosts[0].custom_headers_count; i++)
+    free(cfg.vhosts[0].custom_headers[i]);
+  unlink(path);
+  PASS();
+}
+
+TEST t_header_set_rejects_over_budget(void) {
+  // Fill budget to just over 1536 bytes with multiple valid entries.
+  // Each stored entry = prefix ("X-B0: " = 6 bytes) + 400 value bytes + "\r\n" = 408 bytes.
+  // 3 entries: 3 * 408 = 1224 bytes (fits).  4th: 4 * 408 = 1632 bytes (exceeds 1536).
+  char ini[8192];
+  size_t off = 0;
+  off += (size_t)snprintf(ini + off, sizeof(ini) - off,
+                          "[vhost hs7]\nbind = 127.0.0.1\nport = 8100\n");
+  for (int i = 0; i < 4; i++) {
+    off += (size_t)snprintf(ini + off, sizeof(ini) - off, "header_set = X-B%d: ", i);
+    // 400 'A' characters as value payload.
+    for (int j = 0; j < 400 && off < sizeof(ini) - 2; j++) {
+      ini[off++] = 'A';
+    }
+    ini[off++] = '\n';
+  }
+  ini[off] = '\0';
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  // First 3 entries fit (3 * 408 = 1224 ≤ 1536).  4th pushes total to 1632 > 1536.
+  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 3u);
+
+  for (unsigned i = 0; i < cfg.vhosts[0].custom_headers_count; i++)
+    free(cfg.vhosts[0].custom_headers[i]);
+  unlink(path);
+  PASS();
+}
+
 SUITE(config_ini_greatest) {
   RUN_TEST(t_config_ini_parses_globals_and_vhost);
   RUN_TEST(t_warns_linklocal_without_zone);
@@ -786,6 +962,13 @@ SUITE(config_ini_greatest) {
   RUN_TEST(t_tls_vhost_enable_inherits_global_cert_key);
   RUN_TEST(t_tls_vhost_overrides_ticket_cache_flags);
   RUN_TEST(t_tls_enabled_without_key_fails);
+  RUN_TEST(t_header_set_valid_stored);
+  RUN_TEST(t_header_set_rejects_no_colon);
+  RUN_TEST(t_header_set_rejects_bad_token_char);
+  RUN_TEST(t_header_set_rejects_crlf_injection);
+  RUN_TEST(t_header_set_rejects_overlength);
+  RUN_TEST(t_header_set_max_16_enforced);
+  RUN_TEST(t_header_set_rejects_over_budget);
 }
 
 GREATEST_MAIN_DEFS();

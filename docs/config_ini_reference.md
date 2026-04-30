@@ -1,6 +1,6 @@
 # INI Configuration Reference
 
-Last updated: 2026-04-28
+Last updated: 2026-04-30
 
 This document is the authoritative reference for `server.ini` keys accepted by Lamseryn.
 
@@ -105,6 +105,7 @@ Each vhost should declare bind/port/docroot and feature toggles.
 | `compression_dynamic_min_bytes` | u32 | `256` | files smaller than this threshold are served uncompressed even when `compression_dynamic` is enabled |
 | `compression_dynamic_max_bytes` | u32 | `1048576` (1 MiB) | files larger than this threshold are served uncompressed (sendfile path); prevents unbounded memory use |
 | `compression_dynamic_effort` | u32 | `1` | compression effort `1`–`9` applied to all codecs: for gzip maps to zlib level 1–9; for brotli maps to brotli quality 1–9; `1` is fastest; `9` is smallest output |
+| `header_set` | string (repeatable) | none | emitted verbatim as a response header on all static responses (`200`, `206`, `HEAD`, `304`); value must be a valid `Header-Name: value` line; up to 16 per vhost; max 1024 bytes per entry; total emitted bytes across all entries must not exceed 1536 bytes (excess entries are warned and ignored at startup) |
 | `auth` | bool | false | enables capture of `Authorization` and `Cookie` |
 | `tls` | bool | inherit from globals or false | explicit vhost override |
 | `tls_cert_file` | string | inherit from globals or empty | required when effective TLS is enabled |
