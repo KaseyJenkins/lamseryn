@@ -1,6 +1,6 @@
 # HTTP Capability Matrix (Current vs Planned)
 
-Last updated: 2026-04-30
+Last updated: 2026-05-03
 
 ## Overview
 
@@ -31,6 +31,7 @@ This document is the inventory of:
 - Path normalization and traversal-safe resolution.
 - Response mode selection (`HEAD`, buffered send, sendfile).
 - Custom response headers via repeatable `header_set` INI key (up to 16 per vhost).
+- Directory index resolution: trailing-slash and root requests serve a configurable index file (`index.html` by default); requests to a directory without trailing slash receive `301 Moved Permanently` with `Location: /path/`.
 
 ### Deadlines and resilience (implemented)
 

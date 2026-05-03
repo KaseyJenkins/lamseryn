@@ -36,6 +36,7 @@ enum resp_kind {
   RK_OK_CLOSE,
   RK_OK_KA,
   RK_206,
+  RK_301,
   RK_304,
   RK_400,
   RK_416,
@@ -102,6 +103,9 @@ struct vhost_t {
   unsigned comp_dynamic_max_bytes; // max file size eligible (default 1 MiB)
   unsigned comp_dynamic_min_bytes; // min file size eligible (default 256 B)
   unsigned comp_dynamic_effort;   // compression effort 1-9: gzip level, brotli quality (default 1)
+
+  // Directory index filename (default "index.html").
+  char index_file[64];
 
   // Custom response headers emitted on all static responses.
   // Each entry is a pre-formatted "Header-Name: value\r\n" string.

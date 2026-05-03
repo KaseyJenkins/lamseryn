@@ -62,7 +62,8 @@ const char *static_serve_mime_type_for_path(const char *path) {
 int static_serve_build_docroot_relpath(char out[PATH_MAX],
                                        const char *path_norm,
                                        size_t path_norm_len,
-                                       int path_ends_with_slash) {
+                                       int path_ends_with_slash,
+                                       const char *index_file) {
   if (!out || !path_norm || path_norm_len == 0) {
     return -1;
   }
@@ -91,12 +92,12 @@ int static_serve_build_docroot_relpath(char out[PATH_MAX],
         out[off++] = '/';
       }
     }
-    static const char INDEX[] = "index.html";
-    size_t ilen = sizeof(INDEX) - 1;
+    const char *idx = (index_file && index_file[0]) ? index_file : "index.html";
+    size_t ilen = strlen(idx);
     if (off + ilen >= PATH_MAX) {
       return -1;
     }
-    memcpy(out + off, INDEX, ilen);
+    memcpy(out + off, idx, ilen);
     off += ilen;
   } else {
     if (rel_len >= PATH_MAX) {
@@ -598,10 +599,13 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
 
   char relpath[PATH_MAX];
   int fd = -1;
+  const struct vhost_t *vh = c->vhost;
+  const char *idx = (vh && vh->index_file[0]) ? vh->index_file : NULL;
   if (static_serve_build_docroot_relpath(relpath,
                                          c->h1.path_norm,
                                          (size_t)c->h1.path_norm_len,
-                                         (int)c->h1.path_ends_with_slash)
+                                         (int)c->h1.path_ends_with_slash,
+                                         idx)
       == 0) {
     fd = static_serve_openat_beneath_nofollow(docroot_fd, relpath);
     if (fd < 0) {
@@ -614,11 +618,14 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
   }
 
   struct stat st;
-  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0
+  if (fstat(fd, &st) != 0) {
+    goto done;
+  }
+
+  if (S_ISREG(st.st_mode) && st.st_size >= 0
       && (uint64_t)st.st_size <= (uint64_t)SIZE_MAX) {
     size_t fsz = (size_t)st.st_size;
     const int keep = c->h1.want_keepalive ? 1 : 0;
-    const struct vhost_t *vh = c->vhost;
     const char *ctype = static_serve_mime_type_for_path(relpath);
 
     // Precompressed sibling probe: look for a .br or .gz file next to the
@@ -1084,6 +1091,61 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
           close(fd);
           fd = -1;
         }
+        return 1;
+      }
+    }
+  }
+
+  // Directory without trailing slash: send 301 redirect to path + "/".
+  // This lets the next request resolve the index file via the slash path.
+  if (fd >= 0 && S_ISDIR(st.st_mode) && !c->h1.path_ends_with_slash) {
+    close(fd);
+    fd = -1;
+    const int keep = c->h1.want_keepalive ? 1 : 0;
+    char location_hdr[REQ_TARGET_MAX + 16]; // "Location: " + path + "/?" + query + "\r\n"
+    // Collapse leading slashes so the Location value is always an
+    // absolute-path reference, never a network-path ("//host/...").
+    const char *loc_path = c->h1.target;
+    int loc_path_len = (int)c->h1.path_len;
+    while (loc_path_len > 1 && loc_path[0] == '/' && loc_path[1] == '/') {
+      loc_path++;
+      loc_path_len--;
+    }
+    int n;
+    if (c->h1.query_len > 0) {
+      n = snprintf(location_hdr, sizeof(location_hdr),
+                   "Location: %.*s/?%.*s\r\n",
+                   loc_path_len, loc_path,
+                   (int)c->h1.query_len,
+                   c->h1.target + c->h1.query_off);
+    } else {
+      n = snprintf(location_hdr, sizeof(location_hdr),
+                   "Location: %.*s/\r\n",
+                   loc_path_len, loc_path);
+    }
+    if (n > 0 && (size_t)n < sizeof(location_hdr)) {
+      const char *buf_301 = NULL;
+      size_t len_301 = 0;
+      if (tx_build_headers(&c->tx,
+                           "301 Moved Permanently",
+                           /*content_type=*/"text/html",
+                           /*content_len=*/0,
+                           /*body=*/NULL,
+                           /*body_send_len=*/0,
+                           keep,
+                           /*drain_after_headers=*/0,
+                           location_hdr,
+                           &buf_301,
+                           &len_301)
+          == 0) {
+        struct tx_next_io out301 = {0};
+        (void)tx_begin_headers(&c->tx,
+                               RK_301,
+                               buf_301,
+                               len_301,
+                               keep,
+                               /*drain_after_headers=*/0,
+                               &out301);
         return 1;
       }
     }

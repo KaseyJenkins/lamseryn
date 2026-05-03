@@ -3044,6 +3044,162 @@ static int test_dynamic_compression(const char *host, const char *port,
 }
 
 // ---------------------------------------------------------------------------
+// directory-index integration test.
+// Verifies directory requests without trailing slash get 301 redirect,
+// and directory requests with trailing slash serve the index file.
+// ---------------------------------------------------------------------------
+
+static int test_directory_index(const char *host, const char *port,
+                                int nodelay, int timeout_ms, int verbose) {
+  // ---- Sub-test 1: GET /subdir (no trailing slash): expect 301 ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /subdir HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 301)
+      die("directory-index: GET /subdir expected 301, got %d", st);
+    char loc[256];
+    if (parse_header_value_simple(hdrs, "Location", loc, sizeof(loc)) != 0)
+      die("directory-index: 301 missing Location header");
+    if (strcmp(loc, "/subdir/") != 0)
+      die("directory-index: 301 Location expected '/subdir/', got '%s'", loc);
+    if (verbose)
+      info("directory-index: GET /subdir: 301 Location: %s OK", loc);
+  }
+
+  // ---- Sub-test 2: GET /subdir/ (trailing slash): expect 200 with index content ----
+  {
+    g_len = 0;
+    const char *req =
+      "GET /subdir/ HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char *body = do_req_body(host, port, nodelay, timeout_ms, verbose, 200, req);
+    assert_contains_or_die(body, "subdir index");
+    free(body);
+    if (verbose)
+      info("directory-index: GET /subdir/: 200 OK");
+  }
+
+  // ---- Sub-test 3: GET / (root): expect 200 with index.html ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET / HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("directory-index: GET / expected 200, got %d", st);
+    if (verbose)
+      info("directory-index: GET /: 200 OK");
+  }
+
+  // ---- Sub-test 4: keep-alive 301 — reuse connection after redirect ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+    // First request: GET /subdir → 301 on keep-alive.
+    const char *req1 =
+      "GET /subdir HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req1, verbose, hdrs, sizeof(hdrs), &cl);
+    if (st != 301)
+      die("directory-index: keep-alive 301 expected 301, got %d", st);
+    if (cl != 0)
+      die("directory-index: keep-alive 301 expected Content-Length: 0, got %ld", cl);
+    char loc[256];
+    if (parse_header_value_simple(hdrs, "Location", loc, sizeof(loc)) != 0)
+      die("directory-index: keep-alive 301 missing Location header");
+    if (strcmp(loc, "/subdir/") != 0)
+      die("directory-index: keep-alive 301 Location expected '/subdir/', got '%s'", loc);
+
+    // Second request on the same connection: must succeed (keep-alive worked).
+    g_len = 0;
+    const char *req2 =
+      "GET / HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    st = send_and_read_status(fd, req2, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 200)
+      die("directory-index: follow-up after keep-alive 301 expected 200, got %d", st);
+    if (verbose)
+      info("directory-index: keep-alive 301: follow-up 200 OK");
+  }
+
+  // ---- Sub-test 5: query string preserved in 301 Location ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET /subdir?foo=bar HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 301)
+      die("directory-index: GET /subdir?foo=bar expected 301, got %d", st);
+    char loc[256];
+    if (parse_header_value_simple(hdrs, "Location", loc, sizeof(loc)) != 0)
+      die("directory-index: 301 with query missing Location header");
+    if (strcmp(loc, "/subdir/?foo=bar") != 0)
+      die("directory-index: 301 Location expected '/subdir/?foo=bar', got '%s'", loc);
+    if (verbose)
+      info("directory-index: GET /subdir?foo=bar: 301 Location: %s OK", loc);
+  }
+
+  // ---- Sub-test 6: leading double-slash collapsed in Location ----
+  {
+    g_len = 0;
+    int fd = connect_tcp(host, port, nodelay, timeout_ms);
+    const char *req =
+      "GET //subdir HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+    char hdrs[4096];
+    long cl = 0;
+    int st = send_and_read_status(fd, req, verbose, hdrs, sizeof(hdrs), &cl);
+    close(fd);
+    if (st != 301)
+      die("directory-index: GET //subdir expected 301, got %d", st);
+    char loc[256];
+    if (parse_header_value_simple(hdrs, "Location", loc, sizeof(loc)) != 0)
+      die("directory-index: //subdir 301 missing Location header");
+    if (strcmp(loc, "/subdir/") != 0)
+      die("directory-index: //subdir 301 Location expected '/subdir/', got '%s'", loc);
+    if (verbose)
+      info("directory-index: GET //subdir: 301 Location: %s OK", loc);
+  }
+
+  info("directory-index: OK (6 sub-tests)");
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // header_set integration test.
 // Verifies that custom response headers configured via `header_set` INI keys
 // are emitted verbatim on static response codes: 200, HEAD, 304, and 206.
@@ -3515,6 +3671,7 @@ static void usage(const char *prog) {
           "  precompressed [-H host] [-P port] [--nodelay] [-v]\n"
           "  dynamic-compression [-H host] [-P port] [--nodelay] [-v]\n"
           "  header-set [-H host] [-P port] [--nodelay] [-v]\n"
+          "  directory-index [-H host] [-P port] [--nodelay] [-v]\n"
           "Options:\n"
           "  -H host       Default 127.0.0.1\n"
           "  -P port       Default 8090\n"
@@ -3762,6 +3919,10 @@ int main(int argc, char **argv) {
 
   if (!strcmp(mode, "header-set")) {
     return test_header_set(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "directory-index")) {
+    return test_directory_index(host, port, nodelay, timeout_ms, verbose);
   }
 
   usage(argv[0]);

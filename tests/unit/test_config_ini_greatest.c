@@ -936,6 +936,86 @@ TEST t_header_set_rejects_over_budget(void) {
   PASS();
 }
 
+// ===========================================================================
+// index filename configuration
+// ===========================================================================
+
+TEST t_index_default_is_empty(void) {
+  const char *ini = "[vhost idx]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8094\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  ASSERT_EQ(cfg.vhosts[0].index_file[0], '\0');
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_index_custom_stored(void) {
+  const char *ini = "[vhost idx2]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8095\n"
+                    "index = main.html\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  ASSERT_STR_EQ(cfg.vhosts[0].index_file, "main.html");
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_index_rejects_slash(void) {
+  const char *ini = "[vhost idx3]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8096\n"
+                    "index = sub/index.html\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  // Rejected — must be a plain filename.
+  ASSERT_EQ(cfg.vhosts[0].index_file[0], '\0');
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_index_rejects_dotdot(void) {
+  const char *ini = "[vhost idx4]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8097\n"
+                    "index = ..\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+  ASSERT_EQ(cfg.vhosts[0].index_file[0], '\0');
+
+  unlink(path);
+  PASS();
+}
+
 SUITE(config_ini_greatest) {
   RUN_TEST(t_config_ini_parses_globals_and_vhost);
   RUN_TEST(t_warns_linklocal_without_zone);
@@ -969,6 +1049,10 @@ SUITE(config_ini_greatest) {
   RUN_TEST(t_header_set_rejects_overlength);
   RUN_TEST(t_header_set_max_16_enforced);
   RUN_TEST(t_header_set_rejects_over_budget);
+  RUN_TEST(t_index_default_is_empty);
+  RUN_TEST(t_index_custom_stored);
+  RUN_TEST(t_index_rejects_slash);
+  RUN_TEST(t_index_rejects_dotdot);
 }
 
 GREATEST_MAIN_DEFS();

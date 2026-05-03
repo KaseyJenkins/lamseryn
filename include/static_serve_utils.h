@@ -12,7 +12,8 @@ const char *static_serve_mime_type_for_path(const char *path);
 int static_serve_build_docroot_relpath(char out[PATH_MAX],
                                        const char *path_norm,
                                        size_t path_norm_len,
-                                       int path_ends_with_slash);
+                                       int path_ends_with_slash,
+                                       const char *index_file);
 
 // Open a path beneath root_dirfd with traversal-resistant semantics.
 int static_serve_openat_beneath_nofollow(int root_dirfd, const char *relpath);

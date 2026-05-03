@@ -345,11 +345,67 @@ SUITE(s_custom_headers) {
   RUN_TEST(t_custom_header_null_ptr_zero_count);
 }
 
+// ===========================================================================
+// build_docroot_relpath: index file resolution
+// ===========================================================================
+
+TEST t_relpath_root_default_index(void) {
+  char out[PATH_MAX];
+  ASSERT_EQ(static_serve_build_docroot_relpath(out, "/", 1, 0, NULL), 0);
+  ASSERT_STR_EQ(out, "index.html");
+  PASS();
+}
+
+TEST t_relpath_root_custom_index(void) {
+  char out[PATH_MAX];
+  ASSERT_EQ(static_serve_build_docroot_relpath(out, "/", 1, 0, "main.htm"), 0);
+  ASSERT_STR_EQ(out, "main.htm");
+  PASS();
+}
+
+TEST t_relpath_subdir_slash_default(void) {
+  char out[PATH_MAX];
+  ASSERT_EQ(static_serve_build_docroot_relpath(out, "/sub", 4, 1, NULL), 0);
+  ASSERT_STR_EQ(out, "sub/index.html");
+  PASS();
+}
+
+TEST t_relpath_subdir_slash_custom(void) {
+  char out[PATH_MAX];
+  ASSERT_EQ(static_serve_build_docroot_relpath(out, "/sub", 4, 1, "home.xhtml"), 0);
+  ASSERT_STR_EQ(out, "sub/home.xhtml");
+  PASS();
+}
+
+TEST t_relpath_no_slash_returns_bare(void) {
+  char out[PATH_MAX];
+  ASSERT_EQ(static_serve_build_docroot_relpath(out, "/sub", 4, 0, NULL), 0);
+  ASSERT_STR_EQ(out, "sub");
+  PASS();
+}
+
+TEST t_relpath_empty_index_uses_default(void) {
+  char out[PATH_MAX];
+  ASSERT_EQ(static_serve_build_docroot_relpath(out, "/", 1, 0, ""), 0);
+  ASSERT_STR_EQ(out, "index.html");
+  PASS();
+}
+
+SUITE(s_relpath) {
+  RUN_TEST(t_relpath_root_default_index);
+  RUN_TEST(t_relpath_root_custom_index);
+  RUN_TEST(t_relpath_subdir_slash_default);
+  RUN_TEST(t_relpath_subdir_slash_custom);
+  RUN_TEST(t_relpath_no_slash_returns_bare);
+  RUN_TEST(t_relpath_empty_index_uses_default);
+}
+
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv) {
   GREATEST_MAIN_BEGIN();
   RUN_SUITE(s_flag_independence);
   RUN_SUITE(s_combined);
   RUN_SUITE(s_custom_headers);
+  RUN_SUITE(s_relpath);
   GREATEST_MAIN_END();
 }

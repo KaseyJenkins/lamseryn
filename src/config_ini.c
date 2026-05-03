@@ -754,6 +754,27 @@ static int on_kv(void *user, const char *section, const char *name, const char *
     vh->vf_present |= VF_COMP_DYN_LEVEL;
     return 1;
   }
+  if (!strcasecmp(name, "index")) {
+    if (!value || !value[0]) {
+      LOGW(LOGC_CORE, "empty index value; ignored");
+      return 1;
+    }
+    if (strchr(value, '/') || strcmp(value, ".") == 0
+        || strcmp(value, "..") == 0) {
+      LOGW(LOGC_CORE,
+           "invalid index '%s': must be a plain filename", value);
+      return 1;
+    }
+    size_t vlen = strlen(value);
+    if (vlen >= sizeof(vh->index_file)) {
+      LOGW(LOGC_CORE,
+           "index filename too long (%zu bytes, max %zu); ignored",
+           vlen, sizeof(vh->index_file) - 1);
+      return 1;
+    }
+    memcpy(vh->index_file, value, vlen + 1);
+    return 1;
+  }
   if (!strcasecmp(name, "header_set")) {
     if (!value || !value[0]) {
       LOGW(LOGC_CORE, "empty header_set value; ignored");

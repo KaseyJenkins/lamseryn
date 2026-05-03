@@ -112,6 +112,10 @@ printf 'BROTLI_CONTENT_\n' > "$DOCROOT/comp.css.br"
 printf 'image_data'        > "$DOCROOT/nocomp.png"
 printf 'GZIPPED_PNG\n'     > "$DOCROOT/nocomp.png.gz"
 
+# Directory index test fixture: subdirectory with its own index.html.
+mkdir -p "$DOCROOT/subdir"
+printf '<html><body>subdir index</body></html>\n' > "$DOCROOT/subdir/index.html"
+
 # Backward compatibility: legacy env name forces shutdown lane on.
 if [[ "$ENABLE_SHUTDOWN_BASELINE_ITESTS" == "1" ]]; then
   ENABLE_SHUTDOWN_ITESTS=1
@@ -758,5 +762,10 @@ start_server "all" "false" "stderr" "false" \
   "$(printf 'header_set = X-Header-Set-Test: hello\nheader_set = X-Frame-Options: DENY')"
 echo "[itest] running header_set custom response headers" >&2
 run_client header-set --nodelay
+
+stop_server
+start_server "all" "false" "stderr" "false"
+echo "[itest] running directory index resolution" >&2
+run_client directory-index --nodelay
 
 echo "[itest] OK" >&2
