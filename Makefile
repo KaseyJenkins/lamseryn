@@ -175,8 +175,8 @@ BROTLI_LDLIBS  := $(shell pkg-config --libs libbrotlienc)
 endif
 endif
 
-# Stamp file so APP_DEFS changes rebuild binaries.
-APP_DEFS_STAMP := $(BUILD)/.app_defs
+# Stamp file so effective compile/link flag changes rebuild affected artifacts.
+BUILD_CONFIG_STAMP := $(BUILD)/.build_config
 
 .PHONY: FORCE
 FORCE:
@@ -214,7 +214,7 @@ LOGGER_OBJ    := $(patsubst %.c,$(BUILD)/app/%.o,$(LOGGER_SRC))
 # $(LIBURING_DEPS) is order-only so the liburing sub-build (which regenerates
 # compat.h via configure) finishes before we include its headers.
 # $(ZLIB_DEPS) is order-only for the same reason (zlib.h may need configure output).
-$(BUILD)/app/%.o: %.c $(APP_DEFS_STAMP) | $(LIBURING_DEPS) $(ZLIB_DEPS) $(BUILD)/app $(BUILD)/app/src
+$(BUILD)/app/%.o: %.c $(BUILD_CONFIG_STAMP) | $(LIBURING_DEPS) $(ZLIB_DEPS) $(BUILD)/app $(BUILD)/app/src
 	@mkdir -p $(dir $@)
 	$(CC) $(APP_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -227,13 +227,13 @@ gates: $(BUILD)/$(APP_GATES)
 .PHONY: pipeline_test
 pipeline_test: $(BUILD)/pipeline_test
 
-$(BUILD)/pipeline_test: tests/integration/pipeline_coalesce_test.c | $(BUILD)
+$(BUILD)/pipeline_test: tests/integration/pipeline_coalesce_test.c $(BUILD_CONFIG_STAMP) | $(BUILD)
 	$(CC) $(TOOLS_CFLAGS) $(BROTLI_CFLAGS) -o $@ $<
 
 .PHONY: bench
 bench: $(TOOLS_BIN)
 
-$(TOOLS_BIN): tools/bench/bench_client.c | $(BUILD)
+$(TOOLS_BIN): tools/bench/bench_client.c $(BUILD_CONFIG_STAMP) | $(BUILD)
 	$(CC) $(TOOLS_CFLAGS) -o $@ $<
 
 .PHONY: bench-sweep
@@ -262,22 +262,33 @@ itest-tls:
 	@$(MAKE) -B ENABLE_TLS=1 $(BUILD)/$(APP_ITEST) && \
 	OPENSSL_PREFIX="$(OPENSSL_PREFIX)" bash tests/integration/run_tls_integration_tests.sh "$(BUILD)/$(APP_ITEST)" "$(TLS_ITEST_PORT)"
 
-$(BUILD)/$(APP): $(APP_DEFS_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+$(BUILD)/$(APP): $(BUILD_CONFIG_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
 	$(CC) $(APP_CFLAGS) -o $@ $(APP_OBJ) $(LOGGER_OBJ) $(LIBURING_LINK_INPUTS) $(ZLIB_LINK_INPUTS) $(BROTLI_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
-$(BUILD)/$(APP_GATES): $(APP_DEFS_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+$(BUILD)/$(APP_GATES): $(BUILD_CONFIG_STAMP) $(APP_OBJ) $(LOGGER_OBJ) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
 	$(CC) $(APP_CFLAGS) -o $@ $(APP_OBJ) $(LOGGER_OBJ) $(LIBURING_LINK_INPUTS) $(ZLIB_LINK_INPUTS) $(BROTLI_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
 # itest uses extra -D flags that differ from the main build, so it compiles
 # from source rather than reusing main app objects.
-$(BUILD)/$(APP_ITEST): $(APP_DEFS_STAMP) $(SRC_ITEST) $(LOGGER_SRC) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
+$(BUILD)/$(APP_ITEST): $(BUILD_CONFIG_STAMP) $(SRC_ITEST) $(LOGGER_SRC) $(LOGGER_HDR) $(LIBURING_CHECK_DEPS) $(LIBURING_DEPS) $(ZLIB_DEPS) $(BROTLI_DEPS) $(STATIC_LIB_LLHTTP) $(INI_OBJ) | $(BUILD)
 	$(CC) $(APP_CFLAGS) -o $@ $(SRC_ITEST) $(LOGGER_SRC) \
 		-DBODY_TIMEOUT_MS=200 -DMAX_BODY_BYTES=32 -DENABLE_ITEST_ECHO=1 -DACCESS_LOG_ENABLE_TEST_HOOKS=1 \
 		$(LIBURING_LINK_INPUTS) $(ZLIB_LINK_INPUTS) $(BROTLI_LINK_INPUTS) "$(STATIC_LIB_LLHTTP)" $(INI_OBJ) $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
-$(APP_DEFS_STAMP): FORCE | $(BUILD)
+$(BUILD_CONFIG_STAMP): FORCE | $(BUILD)
 	@tmp="$@.tmp"; \
-	printf '%s\n' "$(APP_DEFS)" > "$$tmp"; \
+	{ \
+		printf 'APP_CFLAGS=%s\n' '$(APP_CFLAGS)'; \
+		printf 'LLHTTP_CFLAGS=%s\n' '$(LLHTTP_CFLAGS)'; \
+		printf 'PIPELINE_TEST_CFLAGS=%s\n' '$(TOOLS_CFLAGS) $(BROTLI_CFLAGS)'; \
+		printf 'BENCH_CFLAGS=%s\n' '$(TOOLS_CFLAGS)'; \
+		printf 'LDFLAGS=%s\n' '$(LDFLAGS)'; \
+		printf 'LDLIBS=%s\n' '$(LDLIBS)'; \
+		printf 'LIBURING_LIBS=%s\n' '$(LIBURING_LIBS)'; \
+		printf 'LIBURING_LINK_INPUTS=%s\n' '$(LIBURING_LINK_INPUTS)'; \
+		printf 'ZLIB_LINK_INPUTS=%s\n' '$(ZLIB_LINK_INPUTS)'; \
+		printf 'BROTLI_LINK_INPUTS=%s\n' '$(BROTLI_LINK_INPUTS)'; \
+	} > "$$tmp"; \
 	if [ -f "$@" ] && cmp -s "$@" "$$tmp"; then \
 		rm -f "$$tmp"; \
 	else \
@@ -389,14 +400,14 @@ check-local-liburing-version: $(LIBUR_DIR)/src/liburing.a | $(BUILD)
 	fi; \
 	rm -f "$$tmp_c" "$$tmp_obj"
 
-$(STATIC_LIB_LLHTTP): $(LLHTTP_OBJ) | $(BUILD)
+$(STATIC_LIB_LLHTTP): $(BUILD_CONFIG_STAMP) $(LLHTTP_OBJ) | $(BUILD)
 	@mkdir -p "$(BUILD)"
 	ar rcs $@ $(LLHTTP_OBJ)
 
-$(BUILD)/llhttp/%.o: $(LLHTTP_DIR)/src/%.c | $(BUILD)/llhttp
+$(BUILD)/llhttp/%.o: $(LLHTTP_DIR)/src/%.c $(BUILD_CONFIG_STAMP) | $(BUILD)/llhttp
 	$(CC) $(LLHTTP_CFLAGS) -c $< -o $@
 
-$(INI_OBJ): $(INI_DIR)/ini.c | $(BUILD)/inih
+$(INI_OBJ): $(INI_DIR)/ini.c $(BUILD_CONFIG_STAMP) | $(BUILD)/inih
 	$(CC) $(LLHTTP_CFLAGS) -DINI_MAX_LINE=2048 -c $< -o $@
 
 $(BUILD)/llhttp:

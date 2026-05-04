@@ -73,7 +73,16 @@ well-suited for exploring what an io_uring-native networking stack looks like in
   identity. **No warning is emitted at build time.**
 
 Optional:
-- OpenSSL (for TLS-enabled build/runtime paths).
+- OpenSSL (required for TLS-enabled build/runtime paths).
+
+**OpenSSL** (required when building with `ENABLE_TLS=1`):
+- If the system OpenSSL development package is installed and visible on the
+  default include/library paths, the TLS build works without extra flags.
+- Otherwise, if `third_party/openssl/` contains the OpenSSL source tree, run
+  `make openssl-local` first. This installs OpenSSL into
+  `third_party/openssl/_install`, which the Makefile auto-detects.
+- If OpenSSL is installed in a nonstandard prefix, build with
+  `OPENSSL_PREFIX=/path/to/prefix`.
 
 ## Build
 
@@ -92,7 +101,14 @@ make asan
 TLS-enabled build:
 
 ```bash
-make ENABLE_TLS=1
+make ENABLE_TLS=1 -j$(nproc)
+```
+
+TLS-enabled build using the vendored OpenSSL source tree:
+
+```bash
+make openssl-local
+make -B ENABLE_TLS=1 OPENSSL_PREFIX=third_party/openssl/_install -j$(nproc)
 ```
 
 ## Run
