@@ -38,9 +38,10 @@ enum tx_decision tx_begin_headers(struct tx_state_t *tx, enum resp_kind rk,
 }
 
 int tx_build_headers(struct tx_state_t *tx, const char *s, const char *ct,
-                     size_t cl, const void *body, size_t bsl, int ka, int dah,
-                     const char *eh, const char **buf, size_t *len) {
-  (void)tx; (void)s; (void)ct; (void)cl; (void)body; (void)bsl;
+                     int emit_cl, size_t cl, const void *body, size_t bsl,
+                     int ka, int dah, const char *eh, const char **buf,
+                     size_t *len) {
+  (void)tx; (void)s; (void)ct; (void)emit_cl; (void)cl; (void)body; (void)bsl;
   (void)ka; (void)dah; (void)eh; (void)buf; (void)len;
   return -1;
 }

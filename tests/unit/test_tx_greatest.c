@@ -130,10 +130,96 @@ SUITE(s_tx) {
   RUN_TEST(t_sendfile_step_mapping_matches_decisions);
 }
 
+// ---------------------------------------------------------------------------
+// tx_build_headers: emit_content_length parameter
+// ---------------------------------------------------------------------------
+
+// 304 case: content_type=NULL, emit_content_length=0 -> omit both headers.
+TEST t_build_headers_null_type_no_emit_cl_omits_both(void) {
+  struct tx_state_t tx;
+  memset(&tx, 0, sizeof(tx));
+  const char *buf = NULL;
+  size_t len = 0;
+  int r = tx_build_headers(&tx,
+                           "304 Not Modified",
+                           /*content_type=*/NULL,
+                           /*emit_content_length=*/0,
+                           /*content_len=*/0,
+                           /*body=*/NULL,
+                           /*body_send_len=*/0,
+                           /*keepalive=*/1,
+                           /*drain_after_headers=*/0,
+                           /*extra_headers=*/NULL,
+                           &buf, &len);
+  ASSERT_EQ(r, 0);
+  ASSERT(buf != NULL && len > 0);
+  ASSERT_EQ(strstr(buf, "Content-Type:"), NULL);
+  ASSERT_EQ(strstr(buf, "Content-Length:"), NULL);
+  tx_discard(&tx);
+  PASS();
+}
+
+// 301/204 case: content_type=NULL, emit_content_length=1 -> Content-Length only.
+TEST t_build_headers_null_type_emit_cl_zero(void) {
+  struct tx_state_t tx;
+  memset(&tx, 0, sizeof(tx));
+  const char *buf = NULL;
+  size_t len = 0;
+  int r = tx_build_headers(&tx,
+                           "301 Moved Permanently",
+                           /*content_type=*/NULL,
+                           /*emit_content_length=*/1,
+                           /*content_len=*/0,
+                           /*body=*/NULL,
+                           /*body_send_len=*/0,
+                           /*keepalive=*/1,
+                           /*drain_after_headers=*/0,
+                           /*extra_headers=*/NULL,
+                           &buf, &len);
+  ASSERT_EQ(r, 0);
+  ASSERT(buf != NULL && len > 0);
+  ASSERT_EQ(strstr(buf, "Content-Type:"), NULL);
+  ASSERT(strstr(buf, "Content-Length: 0\r\n") != NULL);
+  tx_discard(&tx);
+  PASS();
+}
+
+// 200 regression: content_type provided -> both headers emitted.
+TEST t_build_headers_type_provided_emits_both(void) {
+  struct tx_state_t tx;
+  memset(&tx, 0, sizeof(tx));
+  const char *buf = NULL;
+  size_t len = 0;
+  int r = tx_build_headers(&tx,
+                           "200 OK",
+                           /*content_type=*/"text/plain",
+                           /*emit_content_length=*/1,
+                           /*content_len=*/42,
+                           /*body=*/NULL,
+                           /*body_send_len=*/0,
+                           /*keepalive=*/1,
+                           /*drain_after_headers=*/0,
+                           /*extra_headers=*/NULL,
+                           &buf, &len);
+  ASSERT_EQ(r, 0);
+  ASSERT(buf != NULL && len > 0);
+  ASSERT(strstr(buf, "Content-Type: text/plain\r\n") != NULL);
+  ASSERT(strstr(buf, "Content-Length: 42\r\n") != NULL);
+  tx_discard(&tx);
+  PASS();
+}
+
+SUITE(s_tx_build_headers) {
+  RUN_TEST(t_build_headers_null_type_no_emit_cl_omits_both);
+  RUN_TEST(t_build_headers_null_type_emit_cl_zero);
+  RUN_TEST(t_build_headers_type_provided_emits_both);
+}
+
 GREATEST_MAIN_DEFS();
 
 int main(int argc, char **argv) {
   GREATEST_MAIN_BEGIN();
   RUN_SUITE(s_tx);
+  RUN_SUITE(s_tx_build_headers);
   GREATEST_MAIN_END();
 }

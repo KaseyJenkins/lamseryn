@@ -65,6 +65,7 @@ enum tx_decision tx_begin_headers(struct tx_state_t *tx,
 int tx_build_headers(struct tx_state_t *tx,
                      const char *status_line,
                      const char *content_type,
+                     int emit_content_length,
                      size_t content_len,
                      const void *body,
                      size_t body_send_len,
@@ -102,8 +103,10 @@ int tx_build_headers(struct tx_state_t *tx,
     extra_headers = "";
   }
 
-  // When content_type is NULL we omit Content-Type and Content-Length entirely.
-  // This is used for 304 Not Modified (RFC 7232 §4.1: no message body).
+  // Three modes controlled by content_type and emit_content_length:
+  //   content_type != NULL              -> Content-Type + Content-Length (200/206 etc.)
+  //   content_type == NULL, emit_cl=1   -> Content-Length only (301, 204, 416)
+  //   content_type == NULL, emit_cl=0   -> neither header (304 Not Modified)
   // Sizing: "Content-Type: " (14) + longest MIME ~38 + "\r\n" (2)
   //       + "Content-Length: " (16) + 20 digits + "\r\n" (2) = ~92. 128 is safe.
   char content_lines[128];
@@ -112,6 +115,13 @@ int tx_build_headers(struct tx_state_t *tx,
                       "Content-Type: %s\r\n"
                       "Content-Length: %zu\r\n",
                       content_type, content_len);
+    if (cl <= 0 || (size_t)cl >= sizeof(content_lines)) {
+      return -1;
+    }
+  } else if (emit_content_length) {
+    int cl = snprintf(content_lines, sizeof(content_lines),
+                      "Content-Length: %zu\r\n",
+                      content_len);
     if (cl <= 0 || (size_t)cl >= sizeof(content_lines)) {
       return -1;
     }

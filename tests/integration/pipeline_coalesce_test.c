@@ -3126,6 +3126,9 @@ static int test_directory_index(const char *host, const char *port,
       die("directory-index: keep-alive 301 expected 301, got %d", st);
     if (cl != 0)
       die("directory-index: keep-alive 301 expected Content-Length: 0, got %ld", cl);
+    char ct[128];
+    if (parse_header_value_simple(hdrs, "Content-Type", ct, sizeof(ct)) == 0)
+      die("directory-index: 301 must not include Content-Type, got '%s'", ct);
     char loc[256];
     if (parse_header_value_simple(hdrs, "Location", loc, sizeof(loc)) != 0)
       die("directory-index: keep-alive 301 missing Location header");
