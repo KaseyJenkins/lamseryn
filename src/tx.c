@@ -155,7 +155,7 @@ int tx_build_headers(struct tx_state_t *tx,
   }
 
   size_t total = (size_t)hlen + body_send_len;
-  char *owned = (char *)malloc(total);
+  char *owned = (char *)malloc(total + 1);
   if (!owned) {
     return -1;
   }
@@ -164,6 +164,7 @@ int tx_build_headers(struct tx_state_t *tx,
   if (body_send_len) {
     memcpy(owned + (size_t)hlen, body, body_send_len);
   }
+  owned[total] = '\0';
 
   if (tx->dyn_buf) {
     free(tx->dyn_buf);
