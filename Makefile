@@ -254,6 +254,7 @@ itest: all pipeline_test $(BUILD)/$(APP_ITEST)
 .PHONY: phase1-gate
 phase1-gate:
 	@$(MAKE) -B -C tests test && \
+	$(MAKE) -C tests SANITIZE=asan test && \
 	$(MAKE) -B itest && \
 	python3 tools/gates/run_timeout_gates.py --profile "$(PHASE1_GATE_PROFILE)" --threads "$(PHASE1_GATE_THREADS)" --port "$(PHASE1_GATE_PORT)"
 
@@ -492,3 +493,8 @@ instr-dev:
 .PHONY: asan
 asan:
 	$(MAKE) SANITIZE=asan all
+
+# Unit tests built and run under AddressSanitizer.
+.PHONY: unit-asan
+unit-asan:
+	$(MAKE) -C tests SANITIZE=asan test

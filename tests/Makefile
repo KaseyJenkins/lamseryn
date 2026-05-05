@@ -3,6 +3,22 @@
 CC   := gcc
 CSTD ?= gnu11
 
+SANITIZE ?= none
+
+ifeq ($(SANITIZE),asan)
+	BUILD := build/asan
+else
+	BUILD := build
+endif
+
+# Sanitizer flags (compile + link)
+SAN_CFLAGS  :=
+SAN_LDFLAGS :=
+ifeq ($(SANITIZE),asan)
+	SAN_CFLAGS  += -fsanitize=address -fno-omit-frame-pointer
+	SAN_LDFLAGS += -fsanitize=address
+endif
+
 # Include paths: project root, include/, and third-party deps.
 CFLAGS := -O2 -g -Wall -Wextra -Wvla -pipe -fno-plt -fno-omit-frame-pointer \
           -ffunction-sections -fdata-sections \
@@ -12,10 +28,11 @@ CFLAGS := -O2 -g -Wall -Wextra -Wvla -pipe -fno-plt -fno-omit-frame-pointer \
 		  -I ../third_party/inih \
           -I ../third_party/llhttp/include \
           -I ../third_party/liburing/src/include \
-          -Wno-unused-parameter
+          -Wno-unused-parameter \
+          $(SAN_CFLAGS)
 
 # Link-time GC drops unreferenced functions.
-LDFLAGS := -Wl,--gc-sections
+LDFLAGS := -Wl,--gc-sections $(SAN_LDFLAGS)
 LDLIBS  := -lpthread
 
 # liburing static library.
@@ -77,8 +94,6 @@ endif
 
 # llhttp-specific warning leniency.
 LLHTTP_CFLAGS := -Wno-unused-parameter
-
-BUILD := build
 
 # Unit under test plus parser and llhttp.
 UUT        := ../src/http_pipeline.c
