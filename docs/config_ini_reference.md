@@ -107,7 +107,9 @@ Each vhost should declare bind/port/docroot and feature toggles.
 | `compression_dynamic_effort` | u32 | `1` | compression effort `1`–`9` applied to all codecs: for gzip maps to zlib level 1–9; for brotli maps to brotli quality 1–9; `1` is fastest; `9` is smallest output |
 | `header_set` | string (repeatable) | none | emitted verbatim as a response header on all static responses (`200`, `206`, `HEAD`, `304`); value must be a valid `Header-Name: value` line; up to 16 per vhost; max 1024 bytes per entry; total emitted bytes across all entries must not exceed 1536 bytes (excess entries are warned and ignored at startup) |
 | `index` | string | `index.html` | filename served when a request targets a directory (root `/` or trailing-slash path); must be a plain filename (no `/`, `.`, or `..`); max 63 bytes |
-| `auth` | bool | false | enables capture of `Authorization` and `Cookie` |
+| `auth` | bool | false | enables auth-related header capture; required for `auth_basic_file` enforcement |
+| `auth_basic_file` | string | empty | path to htpasswd-format credentials file; if set with `auth = true`, all requests to the vhost require valid HTTP Basic credentials; unreadable files or files with zero usable entries fail config load |
+| `auth_realm` | string | `Restricted` | realm value for `WWW-Authenticate: Basic`; max 63 bytes; quotes, backslashes, and control characters are rejected |
 | `tls` | bool | inherit from globals or false | explicit vhost override |
 | `tls_cert_file` | string | inherit from globals or empty | required when effective TLS is enabled |
 | `tls_key_file` | string | inherit from globals or empty | required when effective TLS is enabled |
@@ -122,7 +124,9 @@ Feature-toggle reality:
 - `static` affects serving path.
 - `range`, `conditional`, and `compression` drive both header capture and static-serving behavior.
 - `compression_dynamic` requires `compression = true`; has no effect if `compression` is disabled.
-- `auth` currently drives header capture for future auth semantics.
+- `auth` by itself only enables header capture; requests become protected when `auth_basic_file` is also set.
+- `auth_basic_file` without `auth = true` logs a warning and is ignored.
+- `auth_realm` is optional; the runtime default challenge realm is `Restricted`.
 - See `docs/http_capability_matrix.md` for implemented vs planned semantics.
 
 ## TLS Inheritance and Validation

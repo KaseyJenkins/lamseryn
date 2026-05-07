@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include "macros.h"
 
+struct auth_store;
+
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
@@ -39,6 +41,7 @@ enum resp_kind {
   RK_301,
   RK_304,
   RK_400,
+  RK_401,
   RK_416,
   RK_403,
   RK_404,
@@ -106,6 +109,11 @@ struct vhost_t {
 
   // Directory index filename (default "index.html").
   char index_file[64];
+
+  // HTTP Basic auth. auth_store is NULL when disabled or auth_basic_file unset.
+  char auth_basic_file[PATH_MAX];
+  char auth_realm[64];
+  struct auth_store *auth_store;
 
   // Custom response headers emitted on all static responses.
   // Each entry is a pre-formatted "Header-Name: value\r\n" string.

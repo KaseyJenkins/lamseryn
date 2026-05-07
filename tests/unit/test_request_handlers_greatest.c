@@ -33,6 +33,13 @@ static int g_static_serve_result = 0;
 static int g_static_serve_errno = 0;
 static int g_static_serve_calls = 0;
 
+// Stub for auth_basic_check: all test vhosts have auth_store=NULL so this
+// would return 0 in the real implementation anyway.
+int auth_basic_check(struct conn *c) {
+  (void)c;
+  return 0;
+}
+
 int static_serve_try_prepare_docroot_response(struct conn *c, int docroot_fd, int *static_open_err) {
   (void)c;
   (void)docroot_fd;

@@ -129,6 +129,7 @@ TEST_BIN_HTTP_RANGE    := $(BUILD)/test_http_range_greatest
 TEST_BIN_COMPRESSION   := $(BUILD)/test_compression_greatest
 TEST_BIN_STATIC_HDRS  := $(BUILD)/test_static_serve_headers_greatest
 TEST_BIN_COMP_DYN     := $(BUILD)/test_compression_dynamic_greatest
+TEST_BIN_AUTH         := $(BUILD)/test_auth_greatest
 
 .PHONY: all
 all: $(TEST_BIN_REAL) \
@@ -156,7 +157,8 @@ all: $(TEST_BIN_REAL) \
 	$(TEST_BIN_HTTP_RANGE) \
 	$(TEST_BIN_COMPRESSION) \
         $(TEST_BIN_STATIC_HDRS) \
-        $(TEST_BIN_COMP_DYN)
+        $(TEST_BIN_COMP_DYN) \
+        $(TEST_BIN_AUTH)
 $(BUILD):
 	@mkdir -p $(BUILD)
 
@@ -196,6 +198,9 @@ $(TEST_BIN_BOUNDARY): unit/test_http_boundary_greatest.c ../src/http_boundary.c 
 
 $(TEST_BIN_URL): unit/test_url_greatest.c ../src/url.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^
+
+$(TEST_BIN_AUTH): unit/test_auth_greatest.c ../src/auth.c ../src/logger.c | $(BUILD)
+	$(CC) $(CFLAGS) -I vendor -o $@ $^ -lcrypt
 
 $(TEST_BIN_HTTP_HEADERS): unit/test_http_headers_greatest.c ../src/http_headers.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^

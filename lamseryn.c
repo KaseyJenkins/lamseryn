@@ -43,6 +43,7 @@
 #include "include/net_server.h"
 #include "include/conn.h"
 #include "include/http_headers.h"
+#include "include/auth.h"
 #include "include/http1_limits.h"
 #include "include/conn_store.h"
 #include "include/buffer_pool.h"
@@ -1220,6 +1221,8 @@ int main(int argc, char **argv) {
     for (unsigned h = 0; h < config.vhosts[i].custom_headers_count; h++) {
       free(config.vhosts[i].custom_headers[h]);
     }
+    auth_store_free(config.vhosts[i].auth_store);
+    config.vhosts[i].auth_store = NULL;
   }
 
   for (int i = 0; i < config.vhost_count; ++i) {

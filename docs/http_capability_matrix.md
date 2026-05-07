@@ -58,7 +58,7 @@ Legend:
 | `If-Modified-Since` | Feature-stored | `CFG_FEAT_CONDITIONAL` | Compared against file mtime; match -> `304 Not Modified`; evaluated only when `If-None-Match` is absent (RFC 7232 precedence) | Implemented |
 | `If-None-Match` | Feature-stored | `CFG_FEAT_CONDITIONAL` | Weak ETag list comparison including wildcard `*`; match -> `304 Not Modified`; takes precedence over `If-Modified-Since` | Implemented |
 | `Accept-Encoding` | Feature-stored | `CFG_FEAT_COMPRESSION` | Precompressed sibling selection (`.br`/`.gz`) for compressible static assets with `Content-Encoding` emission; `Vary: Accept-Encoding` emitted for both encoded and identity responses on compressible types; range requests bypass compressed variant selection; on-the-fly gzip (always) and brotli (when built with `HAVE_BROTLI`) compression for assets without a precompressed sibling when `compression_dynamic` is enabled | Implemented |
-| `Authorization` | Feature-stored | `CFG_FEAT_AUTH` | Captured only; no auth challenge/allow/deny policy engine yet | Captured, semantics pending |
+| `Authorization` | Feature-stored | `CFG_FEAT_AUTH` | Vhost-scoped HTTP Basic enforcement when `auth_basic_file` is configured; malformed or truncated captured values are rejected with `401 Unauthorized` and `WWW-Authenticate` challenge | Implemented for Basic auth |
 | `Cookie` | Feature-stored | `CFG_FEAT_AUTH` | Captured only; no auth/session policy evaluator yet | Captured, semantics pending |
 
 ## 3) Feature Flags: What They Include Today
@@ -119,10 +119,6 @@ Dynamic (on-the-fly) compression — enabled with `compression_dynamic = true`:
 - Precompressed siblings take priority over dynamic compression when both would match.
 - Brotli (`br`) dynamic compression is guarded by `HAVE_BROTLI` at compile time; gzip is always available.
 
-Not yet implemented:
-
-- Authentication backend/policy hooks (under `auth` flag).
-
 ### `auth`
 
 Included headers:
@@ -132,17 +128,18 @@ Included headers:
 
 Current effect:
 
-- Header capture only.
+- `Authorization` is evaluated for vhost-scoped HTTP Basic auth when `auth_basic_file` is configured.
+- Missing, invalid, or truncated `Authorization` values receive `401 Unauthorized` with `WWW-Authenticate: Basic realm="..."`.
+- Valid Basic credentials allow normal request handling to continue.
+- `Cookie` remains capture-only for future auth/session work.
 
 Not yet implemented:
 
-- Authentication backend/policy hooks.
-- `401 Unauthorized` and challenge response behavior.
 - Authz policy integration for route/docroot access.
+- Non-Basic authentication backends or session/cookie policy.
 
 ## 4) Known Gaps
 
-- Auth semantics (challenge, authn/authz decisions).
 - Structured access-log formats beyond text (for example JSONL).
 
 ## 5) Access Logging

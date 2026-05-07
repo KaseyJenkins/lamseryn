@@ -2,7 +2,7 @@
 
 APP        := lamseryn
 APP_GATES  := $(APP)_gates
-SRC        := lamseryn.c src/net_server.c src/http_parser.c src/http_pipeline.c src/http_boundary.c src/request_handlers.c src/conn_store.c src/buffer_pool.c src/accept_controller.c src/timing_wheel.c src/url.c src/http_headers.c src/http1_limits.c src/req_arena_stats.c src/tx.c src/rx_stash.c src/rx_buffers.c src/conn_deadline.c src/worker_loop.c src/static_serve_utils.c src/conn_lifecycle.c src/http_range.c src/compression.c
+SRC        := lamseryn.c src/net_server.c src/http_parser.c src/http_pipeline.c src/http_boundary.c src/request_handlers.c src/conn_store.c src/buffer_pool.c src/accept_controller.c src/timing_wheel.c src/url.c src/http_headers.c src/http1_limits.c src/req_arena_stats.c src/tx.c src/rx_stash.c src/rx_buffers.c src/conn_deadline.c src/worker_loop.c src/static_serve_utils.c src/conn_lifecycle.c src/http_range.c src/compression.c src/auth.c
 SRC       += src/config_ini.c
 SRC       += src/access_log.c
 SRC       += src/tls.c
@@ -194,7 +194,7 @@ APP_CFLAGS := $(BASE_CFLAGS) -std=$(CSTD) -Wshadow -Werror $(SAN_CFLAGS) \
 LLHTTP_CFLAGS := $(BASE_CFLAGS) -std=$(CSTD) -Wno-unused-parameter $(SAN_CFLAGS)
 
 LDFLAGS    := $(SAN_LDFLAGS) -rdynamic $(TLS_LDFLAGS) $(ZLIB_LDFLAGS) $(BROTLI_LDFLAGS)
-LDLIBS     := -lpthread $(TLS_LDLIBS) $(ZLIB_LDLIBS) $(BROTLI_LDLIBS)
+LDLIBS     := -lpthread $(TLS_LDLIBS) $(ZLIB_LDLIBS) $(BROTLI_LDLIBS) -lcrypt
 
 STATIC_LIB_LLHTTP := $(BUILD)/libllhttp.a
 
@@ -251,11 +251,16 @@ itest: all pipeline_test $(BUILD)/$(APP_ITEST)
 		$(MAKE) itest-tls; \
 	fi
 
+.PHONY: itest-auth
+itest-auth: all
+	@bash tests/integration/test_auth.sh "$(BUILD)/$(APP)"
+
 .PHONY: phase1-gate
 phase1-gate:
 	@$(MAKE) -B -C tests test && \
 	$(MAKE) -C tests SANITIZE=asan test && \
 	$(MAKE) -B itest && \
+	$(MAKE) -B itest-auth && \
 	python3 tools/gates/run_timeout_gates.py --profile "$(PHASE1_GATE_PROFILE)" --threads "$(PHASE1_GATE_THREADS)" --port "$(PHASE1_GATE_PORT)"
 
 .PHONY: itest-tls

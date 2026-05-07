@@ -4,6 +4,7 @@
 #include "include/http_pipeline.h"
 #include "include/static_serve_utils.h"
 #include "include/itest_echo.h"
+#include "include/auth.h"
 #include <errno.h>
 
 // Response buffers are provided by the server translation unit.
@@ -221,6 +222,16 @@ struct request_ok_dispatch request_dispatch_ok(struct conn *c,
   int static_open_err = 0;
 
   const struct vhost_t *vh = c->vhost;
+  int auth_result = auth_basic_check(c);
+  if (auth_result > 0) {
+    result.kind = REQUEST_OK_TX_BUFFER;
+    return result;
+  }
+  if (auth_result < 0) {
+    result.kind = REQUEST_OK_HEADER_RESPONSE;
+    result.response = request_build_response_plan(RK_500, 0, 0, 1);
+    return result;
+  }
   if (route_plan.try_static) {
     if (static_serve_try_prepare_docroot_response(c, vh->docroot_fd, &static_open_err)) {
       result.kind = REQUEST_OK_TX_BUFFER;

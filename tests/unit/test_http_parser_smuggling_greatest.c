@@ -3,9 +3,11 @@
 #include "../vendor/greatest.h"
 
 #include "include/conn.h"
+#include "include/http_headers.h"
 #include "include/http_pipeline.h"
 #include "http_parser.h"
 
+#include <stdio.h>
 #include <string.h>
 
 struct corpus_case {
@@ -223,9 +225,46 @@ TEST t_header_malformed_matrix_escalates_400(void) {
   PASS();
 }
 
+TEST t_authorization_capture_truncation_flag_set_on_overlong_value(void) {
+  struct conn c;
+  init_conn_parser(&c, 100);
+
+  c.h1.req_hdr_store_mask = http_header_bit(HDR_ID_AUTHORIZATION);
+
+  char token[220];
+  memset(token, 'A', sizeof(token) - 1);
+  token[sizeof(token) - 1] = '\0';
+
+  char req[512];
+  int n = snprintf(req,
+                   sizeof(req),
+                   "GET / HTTP/1.1\r\n"
+                   "Host: x\r\n"
+                   "Authorization: Basic %s\r\n"
+                   "\r\n",
+                   token);
+  ASSERT(n > 0);
+  ASSERT((size_t)n < sizeof(req));
+
+  struct http_pipeline_result r = http_pipeline_feed(&c, req, (size_t)n);
+  ASSERT_EQ(r.action, HP_ACTION_RESP_OK);
+  ASSERT_EQ(c.h1.parse_error, 0);
+  ASSERT_EQ(c.h1.req_hdr_count, 1);
+
+  const struct req_hdr_entry *e = &c.h1.req_hdrs[0];
+  ASSERT_EQ((enum http_header_id)e->id, HDR_ID_AUTHORIZATION);
+  ASSERT((e->flags & REQ_HDR_F_VALUE_TRUNCATED) != 0u);
+  ASSERT_EQ(e->value_len, (uint16_t)(REQ_HDR_VALUE_MAX - 1));
+  ASSERT(e->value != NULL);
+
+  destroy_conn_parser(&c);
+  PASS();
+}
+
 SUITE(s_http_parser_smuggling) {
   RUN_TEST(t_smuggling_adversarial_corpus);
   RUN_TEST(t_header_malformed_matrix_escalates_400);
+  RUN_TEST(t_authorization_capture_truncation_flag_set_on_overlong_value);
 }
 
 GREATEST_MAIN_DEFS();

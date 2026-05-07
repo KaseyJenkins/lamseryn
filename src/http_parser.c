@@ -83,25 +83,32 @@ void http_parser_reset_header_state(struct conn *c) {
   c->h1.hdr_name[0] = 0;
   c->h1.hdr_val[0] = 0;
   c->h1.hdr_val_raw_len = 0;
+  c->h1.hdr_val_raw_truncated = 0;
   if (sizeof(c->h1.hdr_val_raw)) {
     c->h1.hdr_val_raw[0] = 0;
   }
 }
 
-static inline void h1_hdr_append_raw(char *dst,
-                                     uint8_t *dst_len,
-                                     size_t dst_cap,
-                                     const char *src,
-                                     size_t n) {
+static inline int h1_hdr_append_raw(char *dst,
+                                    uint8_t *dst_len,
+                                    size_t dst_cap,
+                                    const char *src,
+                                    size_t n) {
   if (!dst || !dst_len || dst_cap == 0 || !src || n == 0) {
-    return;
+    return 0;
   }
+  int truncated = 0;
   size_t len = (size_t)(*dst_len);
-  for (size_t i = 0; i < n && len + 1 < dst_cap; ++i) {
-    dst[len++] = src[i];
+  for (size_t i = 0; i < n; ++i) {
+    if (len + 1 < dst_cap) {
+      dst[len++] = src[i];
+    } else {
+      truncated = 1;
+    }
   }
   dst[len] = 0;
   *dst_len = (uint8_t)len;
+  return truncated;
 }
 
 static inline void h1_hdr_append_lower(char *dst,
@@ -279,6 +286,7 @@ static inline void h1_finalize_interested_header(struct conn *c) {
           e->name = nm;
           e->name_len = nlen;
           e->id = (uint8_t)id;
+          e->flags = c->h1.hdr_val_raw_truncated ? REQ_HDR_F_VALUE_TRUNCATED : 0u;
           e->value = vv;
           e->value_len = (uint16_t)vlen;
         }
@@ -380,14 +388,16 @@ static int on_header_value(llhttp_t *p, const char *at, size_t length) {
     c->h1.hdr_val_len = 0;
     c->h1.hdr_val[0] = 0;
     c->h1.hdr_val_raw_len = 0;
+    c->h1.hdr_val_raw_truncated = 0;
     c->h1.hdr_val_raw[0] = 0;
   }
 
-  h1_hdr_append_raw(c->h1.hdr_val_raw,
-                    &c->h1.hdr_val_raw_len,
-                    sizeof(c->h1.hdr_val_raw),
-                    at,
-                    length);
+  c->h1.hdr_val_raw_truncated |=
+    (uint8_t)h1_hdr_append_raw(c->h1.hdr_val_raw,
+                               &c->h1.hdr_val_raw_len,
+                               sizeof(c->h1.hdr_val_raw),
+                               at,
+                               length);
 
   if (c->h1.hdr_interest != 0) {
     h1_hdr_append_lower(c->h1.hdr_val, &c->h1.hdr_val_len, sizeof(c->h1.hdr_val), at, length);

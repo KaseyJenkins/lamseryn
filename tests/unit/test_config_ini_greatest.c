@@ -13,6 +13,32 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
+// Stubs for auth functions: config_ini tests never set auth_basic_file so
+// auth_store_load is never called, but the symbol must be resolvable.
+#include "include/auth.h"
+static struct auth_store *g_auth_store_load_result = NULL;
+static unsigned g_auth_store_load_calls = 0;
+static char g_auth_store_load_last_path[PATH_MAX];
+
+static void reset_auth_store_stub(void) {
+  g_auth_store_load_result = NULL;
+  g_auth_store_load_calls = 0;
+  g_auth_store_load_last_path[0] = '\0';
+}
+
+struct auth_store *auth_store_load(const char *path) {
+  g_auth_store_load_calls++;
+  if (path) {
+    snprintf(g_auth_store_load_last_path, sizeof(g_auth_store_load_last_path), "%s", path);
+  } else {
+    g_auth_store_load_last_path[0] = '\0';
+  }
+  return g_auth_store_load_result;
+}
+void auth_store_free(struct auth_store *s) {
+  (void)s;
+}
+
 static int write_temp_ini(const char *content, char out_path[256]) {
   if (!content || !out_path) {
     return -1;
@@ -88,6 +114,11 @@ static int capture_stderr_end(int saved_fd, int read_fd, char *buf, size_t bufsz
   return 0;
 }
 
+static int init_cfg(struct config_t *cfg) {
+  reset_auth_store_stub();
+  return config_set_defaults(cfg);
+}
+
 TEST t_config_ini_parses_globals_and_vhost(void) {
   const char *ini = "[globals]\n"
                     "log_level = debug\n"
@@ -112,7 +143,7 @@ TEST t_config_ini_parses_globals_and_vhost(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT_EQ(cfg.vhost_count, 1);
@@ -155,7 +186,7 @@ TEST t_warns_linklocal_without_zone(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   char out[1024];
@@ -187,7 +218,7 @@ TEST t_warns_multiple_wildcard_vhosts(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   char out[1024];
@@ -211,7 +242,7 @@ TEST t_applies_default_max_header_fields(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT_EQ(cfg.vhost_count, 1);
@@ -231,7 +262,7 @@ TEST t_invalid_port_fails(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
 
   unlink(path);
@@ -256,7 +287,7 @@ TEST t_invalid_bool_warns_and_ignores(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   char out[1024];
@@ -281,7 +312,7 @@ TEST t_unknown_globals_ignored(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT((cfg.g.present & GF_QUEUE_DEPTH) != 0);
@@ -304,7 +335,7 @@ TEST t_shutdown_grace_ms_parsed(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT((cfg.g.present & GF_SHUTDOWN_GRACE_MS) != 0);
@@ -327,7 +358,7 @@ TEST t_shutdown_grace_ms_invalid_fails(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
   ASSERT(strstr(err, "shutdown_grace_ms") != NULL);
 
@@ -348,7 +379,7 @@ TEST t_workers_parsed(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT((cfg.g.present & GF_WORKERS) != 0);
@@ -371,7 +402,7 @@ TEST t_workers_invalid_fails(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
   ASSERT(strstr(err, "workers") != NULL);
 
@@ -392,7 +423,7 @@ TEST t_wake_pipe_mode_parsed(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT((cfg.g.present & GF_WAKE_PIPE_MODE) != 0);
@@ -415,7 +446,7 @@ TEST t_wake_pipe_mode_alias_rejected(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT((cfg.g.present & GF_WAKE_PIPE_MODE) == 0);
@@ -441,7 +472,7 @@ TEST t_access_log_globals_parsed(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT((cfg.g.present & GF_ACCESS_LOG_ENABLED) != 0);
@@ -473,7 +504,7 @@ TEST t_access_log_sample_invalid_fails(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
   ASSERT(strstr(err, "access_log_sample") != NULL);
 
@@ -494,7 +525,7 @@ TEST t_access_log_min_status_invalid_fails(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
   ASSERT(strstr(err, "access_log_min_status") != NULL);
 
@@ -521,7 +552,7 @@ TEST t_docroot_open_failure_nonfatal(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   char out[1024];
@@ -553,7 +584,7 @@ TEST t_unknown_vhost_key_warns_and_ignores(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   char out[1024];
@@ -574,7 +605,7 @@ TEST t_hostname_bind_normalizes_to_numeric(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT_EQ(cfg.vhost_count, 1);
@@ -595,7 +626,7 @@ TEST t_hostname_bind_failure_returns_error(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
   ASSERT(err[0] != '\0');
 
@@ -624,7 +655,7 @@ TEST t_all_vhosts_preserved_over_16(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT_EQ(cfg.vhost_count, 20);
@@ -655,7 +686,7 @@ TEST t_tls_globals_parsed(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT((cfg.g.present & GF_TLS_ENABLED) != 0);
@@ -696,7 +727,7 @@ TEST t_tls_vhost_enable_inherits_global_cert_key(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT_EQ(cfg.vhost_count, 1);
@@ -727,7 +758,7 @@ TEST t_tls_vhost_overrides_ticket_cache_flags(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
 
   ASSERT_EQ(cfg.vhost_count, 1);
@@ -752,7 +783,7 @@ TEST t_tls_enabled_without_key_fails(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
   ASSERT(strstr(err, "tls=true requires tls_cert_file and tls_key_file") != NULL);
 
@@ -1008,9 +1039,158 @@ TEST t_index_rejects_dotdot(void) {
 
   struct config_t cfg;
   char err[256];
-  ASSERT_EQ(config_set_defaults(&cfg), 0);
+  ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
   ASSERT_EQ(cfg.vhosts[0].index_file[0], '\0');
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_auth_basic_file_and_realm_parsed(void) {
+  static struct auth_store fake_store;
+  const char *ini = "[vhost auth]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8098\n"
+                    "auth = true\n"
+                    "auth_basic_file = /tmp/auth.htpasswd\n"
+                    "auth_realm = Admin Area\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  g_auth_store_load_result = &fake_store;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.vhost_count, 1);
+  ASSERT_EQ(strcmp(cfg.vhosts[0].auth_basic_file, "/tmp/auth.htpasswd"), 0);
+  ASSERT_EQ(strcmp(cfg.vhosts[0].auth_realm, "Admin Area"), 0);
+  ASSERT_EQ(g_auth_store_load_calls, 1u);
+  ASSERT_EQ(strcmp(g_auth_store_load_last_path, "/tmp/auth.htpasswd"), 0);
+  ASSERT_EQ(cfg.vhosts[0].auth_store, &fake_store);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_auth_realm_invalid_rejected(void) {
+  const char *ini = "[vhost auth]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8099\n"
+                    "auth = true\n"
+                    "auth_realm = Bad\"Realm\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  log_set_level(LOG_WARN);
+  log_set_categories(LOGC_CORE);
+  log_set_thread_id(0);
+
+  int saved_fd = -1, read_fd = -1;
+  ASSERT_EQ(capture_stderr_start(&saved_fd, &read_fd), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  char out[1024];
+  ASSERT_EQ(capture_stderr_end(saved_fd, read_fd, out, sizeof(out)), 0);
+  ASSERT(strstr(out, "auth_realm contains invalid character") != NULL);
+  ASSERT_EQ(cfg.vhosts[0].auth_realm[0], '\0');
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_auth_basic_file_ignored_when_auth_disabled(void) {
+  const char *ini = "[vhost auth]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8100\n"
+                    "auth = false\n"
+                    "auth_basic_file = /tmp/ignored.htpasswd\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  log_set_level(LOG_WARN);
+  log_set_categories(LOGC_CORE);
+  log_set_thread_id(0);
+
+  int saved_fd = -1, read_fd = -1;
+  ASSERT_EQ(capture_stderr_start(&saved_fd, &read_fd), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  char out[1024];
+  ASSERT_EQ(capture_stderr_end(saved_fd, read_fd, out, sizeof(out)), 0);
+  ASSERT(strstr(out, "auth_basic_file set but auth = false; file ignored") != NULL);
+  ASSERT_EQ(g_auth_store_load_calls, 0u);
+  ASSERT_EQ(cfg.vhosts[0].auth_store, NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_auth_basic_file_load_failure_returns_error(void) {
+  const char *ini = "[vhost auth]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8101\n"
+                    "auth = true\n"
+                    "auth_basic_file = /tmp/missing.htpasswd\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  g_auth_store_load_result = NULL;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT_EQ(g_auth_store_load_calls, 1u);
+  ASSERT_EQ(strcmp(g_auth_store_load_last_path, "/tmp/missing.htpasswd"), 0);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_auth_load_failure_unwinds_prior_vhost_resources(void) {
+  const char *ini = "[vhost first]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8102\n"
+                    "docroot = /tmp\n"
+                    "header_set = X-Test: one\n"
+                    "\n"
+                    "[vhost second]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8103\n"
+                    "auth = true\n"
+                    "auth_basic_file = /tmp/missing.htpasswd\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  g_auth_store_load_result = NULL;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+
+  ASSERT_EQ(cfg.vhost_count, 2);
+  ASSERT_EQ(cfg.vhosts[0].docroot_fd, -1);
+  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 0u);
+  ASSERT_EQ(cfg.vhosts[0].custom_headers[0], NULL);
+  ASSERT_EQ(cfg.vhosts[0].auth_store, NULL);
+  ASSERT_EQ(cfg.vhosts[1].auth_store, NULL);
+  ASSERT_EQ(g_auth_store_load_calls, 1u);
+  ASSERT_EQ(strcmp(g_auth_store_load_last_path, "/tmp/missing.htpasswd"), 0);
 
   unlink(path);
   PASS();
@@ -1053,6 +1233,11 @@ SUITE(config_ini_greatest) {
   RUN_TEST(t_index_custom_stored);
   RUN_TEST(t_index_rejects_slash);
   RUN_TEST(t_index_rejects_dotdot);
+  RUN_TEST(t_auth_basic_file_and_realm_parsed);
+  RUN_TEST(t_auth_realm_invalid_rejected);
+  RUN_TEST(t_auth_basic_file_ignored_when_auth_disabled);
+  RUN_TEST(t_auth_basic_file_load_failure_returns_error);
+  RUN_TEST(t_auth_load_failure_unwinds_prior_vhost_resources);
 }
 
 GREATEST_MAIN_DEFS();

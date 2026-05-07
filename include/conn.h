@@ -37,9 +37,14 @@
 struct req_hdr_entry {
   uint8_t  name_len;
   uint8_t  id;        // enum http_header_id, resolved at parse time.
+  uint8_t  flags;     // REQ_HDR_F_* bits.
   uint16_t value_len;
   char *name;
   char *value;
+};
+
+enum {
+  REQ_HDR_F_VALUE_TRUNCATED = 1u << 0,
 };
 
 // Per-connection deadline and timeout state.
@@ -129,6 +134,7 @@ struct http1_state {
 
   // Raw header value accumulator for request-header capture.
   uint8_t hdr_val_raw_len;
+  uint8_t hdr_val_raw_truncated;
   char hdr_val_raw[REQ_HDR_VALUE_MAX];
 
   // Bounded request-header capture (lowercased name, raw value).

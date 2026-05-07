@@ -49,6 +49,12 @@ const char RESP_503[] = "H503";
 const size_t RESP_503_len = sizeof(RESP_503) - 1;
 #endif
 
+// Stub: all test conns have auth_store=NULL so auth_basic_check returns 0.
+int auth_basic_check(struct conn *c) {
+  (void)c;
+  return 0;
+}
+
 static struct worker_ctx w;
 
 static void init_wheel(uint32_t slots, uint32_t tick_ms, uint64_t now) {

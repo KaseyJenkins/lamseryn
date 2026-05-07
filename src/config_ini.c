@@ -1,5 +1,6 @@
 #include "ini.h"
 #include "include/types.h"
+#include "include/auth.h"
 #include "include/logger.h"
 
 #include <stdio.h>
@@ -775,6 +776,41 @@ static int on_kv(void *user, const char *section, const char *name, const char *
     memcpy(vh->index_file, value, vlen + 1);
     return 1;
   }
+  if (!strcasecmp(name, "auth_basic_file")) {
+    if (!value || !value[0]) {
+      LOGW(LOGC_CORE, "empty auth_basic_file value; ignored");
+      return 1;
+    }
+    size_t vlen = strlen(value);
+    if (vlen >= sizeof(vh->auth_basic_file)) {
+      LOGW(LOGC_CORE, "auth_basic_file path too long; ignored");
+      return 1;
+    }
+    memcpy(vh->auth_basic_file, value, vlen + 1);
+    return 1;
+  }
+  if (!strcasecmp(name, "auth_realm")) {
+    if (!value || !value[0]) {
+      LOGW(LOGC_CORE, "empty auth_realm value; ignored");
+      return 1;
+    }
+    size_t vlen = strlen(value);
+    if (vlen >= sizeof(vh->auth_realm)) {
+      LOGW(LOGC_CORE, "auth_realm too long (max %zu); ignored", sizeof(vh->auth_realm) - 1);
+      return 1;
+    }
+    /* Reject embedded quotes, backslashes, and control characters — these
+     * appear verbatim in the WWW-Authenticate header value. */
+    for (size_t k = 0; k < vlen; k++) {
+      unsigned char ch = (unsigned char)value[k];
+      if (ch < 0x20 || ch == '"' || ch == '\\') {
+        LOGW(LOGC_CORE, "auth_realm contains invalid character; ignored");
+        return 1;
+      }
+    }
+    memcpy(vh->auth_realm, value, vlen + 1);
+    return 1;
+  }
   if (!strcasecmp(name, "header_set")) {
     if (!value || !value[0]) {
       LOGW(LOGC_CORE, "empty header_set value; ignored");
@@ -851,6 +887,30 @@ static int on_kv(void *user, const char *section, const char *name, const char *
   return 1;
 }
 
+static void cleanup_vhost_runtime_state(struct config_t *cfg) {
+  if (!cfg) {
+    return;
+  }
+
+  for (int i = 0; i < cfg->vhost_count; ++i) {
+    struct vhost_t *vh = &cfg->vhosts[i];
+
+    if (vh->docroot_fd >= 0) {
+      close(vh->docroot_fd);
+      vh->docroot_fd = -1;
+    }
+
+    for (unsigned h = 0; h < vh->custom_headers_count; ++h) {
+      free(vh->custom_headers[h]);
+      vh->custom_headers[h] = NULL;
+    }
+    vh->custom_headers_count = 0;
+
+    auth_store_free(vh->auth_store);
+    vh->auth_store = NULL;
+  }
+}
+
 int config_set_defaults(struct config_t *cfg) {
   if (!cfg) {
     return -1;
@@ -886,11 +946,11 @@ int config_load_ini(const char *path, struct config_t *cfg, char err[256]) {
         snprintf(err, 256, "ini_parse failed (rc=%d)", rc);
       }
     }
-    return -1;
+    goto fail;
   }
 
   if (normalize_vhost_binds(cfg, err) != 0) {
-    return -1;
+    goto fail;
   }
 
   config_warn_vhost_ambiguity(cfg);
@@ -920,7 +980,7 @@ int config_load_ini(const char *path, struct config_t *cfg, char err[256]) {
                    "vhost '%s': tls=true requires tls_cert_file and tls_key_file",
                    vh->name);
         }
-        return -1;
+        goto fail;
       }
     }
 
@@ -942,6 +1002,33 @@ int config_load_ini(const char *path, struct config_t *cfg, char err[256]) {
         LOGW(LOGC_CORE, "docroot open failed: %s: %s", cfg->vhosts[i].docroot, strerror(errno));
       }
     }
+    if (cfg->vhosts[i].auth_basic_file[0]) {
+      if (!(cfg->vhosts[i].features & CFG_FEAT_AUTH)) {
+        LOGW(LOGC_CORE,
+             "vhost '%s': auth_basic_file set but auth = false; file ignored",
+             cfg->vhosts[i].name);
+      } else {
+        cfg->vhosts[i].auth_store = auth_store_load(cfg->vhosts[i].auth_basic_file);
+        if (!cfg->vhosts[i].auth_store) {
+          LOGE(LOGC_CORE,
+               "vhost '%s': failed to load auth_basic_file '%s'",
+               cfg->vhosts[i].name,
+               cfg->vhosts[i].auth_basic_file);
+          if (err) {
+            snprintf(err,
+                     256,
+                     "vhost '%s': failed to load auth_basic_file '%s'",
+                     cfg->vhosts[i].name,
+                     cfg->vhosts[i].auth_basic_file);
+          }
+          goto fail;
+        }
+      }
+    }
   }
   return 0;
+
+fail:
+  cleanup_vhost_runtime_state(cfg);
+  return -1;
 }
