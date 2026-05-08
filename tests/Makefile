@@ -7,6 +7,8 @@ SANITIZE ?= none
 
 ifeq ($(SANITIZE),asan)
 	BUILD := build/asan
+else ifeq ($(SANITIZE),ubsan)
+	BUILD := build/ubsan
 else
 	BUILD := build
 endif
@@ -17,6 +19,9 @@ SAN_LDFLAGS :=
 ifeq ($(SANITIZE),asan)
 	SAN_CFLAGS  += -fsanitize=address -fno-omit-frame-pointer
 	SAN_LDFLAGS += -fsanitize=address
+else ifeq ($(SANITIZE),ubsan)
+	SAN_CFLAGS  += -fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+	SAN_LDFLAGS += -fsanitize=undefined -fno-sanitize-recover=undefined
 endif
 
 # Include paths: project root, include/, and third-party deps.

@@ -151,6 +151,18 @@ Unit tests:
 make -C tests test
 ```
 
+Unit tests under AddressSanitizer:
+
+```bash
+make unit-asan
+```
+
+Unit tests under UndefinedBehaviorSanitizer:
+
+```bash
+make unit-ubsan
+```
+
 Integration tests:
 
 ```bash
@@ -162,10 +174,6 @@ Canonical gate command (used in CI):
 ```bash
 make phase1-gate
 ```
-
-CI workflow:
-
-- .github/workflows/phase1-gate.yml
 
 ## Contributing
 

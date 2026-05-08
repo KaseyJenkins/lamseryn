@@ -259,6 +259,7 @@ itest-auth: all
 phase1-gate:
 	@$(MAKE) -B -C tests test && \
 	$(MAKE) -C tests SANITIZE=asan test && \
+	$(MAKE) -C tests SANITIZE=ubsan test && \
 	$(MAKE) -B itest && \
 	$(MAKE) -B itest-auth && \
 	python3 tools/gates/run_timeout_gates.py --profile "$(PHASE1_GATE_PROFILE)" --threads "$(PHASE1_GATE_THREADS)" --port "$(PHASE1_GATE_PORT)"
@@ -503,3 +504,8 @@ asan:
 .PHONY: unit-asan
 unit-asan:
 	$(MAKE) -C tests SANITIZE=asan test
+
+# Unit tests built and run under UndefinedBehaviorSanitizer.
+.PHONY: unit-ubsan
+unit-ubsan:
+	$(MAKE) -C tests SANITIZE=ubsan test
