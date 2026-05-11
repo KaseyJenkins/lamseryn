@@ -704,6 +704,30 @@ if [[ "$ENABLE_EXTRA_ITESTS" == "1" ]]; then
 
   echo "[itest] running Expect:100-continue body timeout (expect 408)" >&2
   run_client expect-100-continue-timeout --nodelay
+
+  echo "[itest] running emergency fallback path checks (forced tx_build_headers failure)" >&2
+  stop_server
+  export TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS="400,408"
+  start_server ""
+  unset TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS
+
+  run_client te-cl-conflict-fallback --nodelay
+  run_client body-timeout-fallback --nodelay
+
+  stop_server
+  start_server ""
+
+  echo "[itest] running malformed forced-fail list checks (invalid tokens ignored)" >&2
+  stop_server
+  export TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS=" 4 , 4000 , x , 08 , 4088 "
+  start_server ""
+  unset TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS
+
+  run_client te-cl-conflict --nodelay
+  run_client body-timeout --nodelay
+
+  stop_server
+  start_server ""
 fi
 
 if [[ "$ENABLE_SHUTDOWN_ITESTS" == "1" ]]; then

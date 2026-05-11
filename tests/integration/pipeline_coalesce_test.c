@@ -461,6 +461,100 @@ static int parse_status_code(const char *hdrs) {
   return (int)code;
 }
 
+static int read_one_response_prefix_expect_header(int fd,
+                                                  int expected_status,
+                                                  const char *required_header,
+                                                  int verbose) {
+  if (!required_header || !*required_header)
+    return -1;
+
+  char buf[32 * 1024];
+  size_t total = 0;
+  size_t header_end = 0;
+  if (read_response_prefix(fd,
+                           buf,
+                           sizeof(buf) - 1,
+                           &total,
+                           &header_end)
+      != 0) {
+    return -1;
+  }
+  if (header_end == 0 || header_end >= sizeof(buf)) {
+    return -1;
+  }
+
+  // Only inspect header bytes; body bytes are irrelevant for this assertion.
+  buf[header_end] = '\0';
+
+  int st = parse_status_code(buf);
+  if (st < 0) {
+    print_first_response_line(stderr, buf);
+    return -1;
+  }
+  if (expected_status >= 0 && st != expected_status) {
+    print_first_response_line(stderr, buf);
+    return -1;
+  }
+
+  char value[256];
+  if (parse_header_value_simple(buf, required_header, value, sizeof(value)) != 0
+      || value[0] == '\0') {
+    return -1;
+  }
+
+  if (verbose) {
+    info("resp: status=%d %s=%s", st, required_header, value);
+  }
+
+  return 0;
+}
+
+static int read_one_response_prefix_expect_no_header(int fd,
+                                                     int expected_status,
+                                                     const char *forbidden_header,
+                                                     int verbose) {
+  if (!forbidden_header || !*forbidden_header)
+    return -1;
+
+  char buf[32 * 1024];
+  size_t total = 0;
+  size_t header_end = 0;
+  if (read_response_prefix(fd,
+                           buf,
+                           sizeof(buf) - 1,
+                           &total,
+                           &header_end)
+      != 0) {
+    return -1;
+  }
+  if (header_end == 0 || header_end >= sizeof(buf)) {
+    return -1;
+  }
+
+  buf[header_end] = '\0';
+
+  int st = parse_status_code(buf);
+  if (st < 0) {
+    print_first_response_line(stderr, buf);
+    return -1;
+  }
+  if (expected_status >= 0 && st != expected_status) {
+    print_first_response_line(stderr, buf);
+    return -1;
+  }
+
+  char value[256];
+  if (parse_header_value_simple(buf, forbidden_header, value, sizeof(value)) == 0) {
+    return -1;
+  }
+
+  if (verbose) {
+    info("resp: status=%d %s absent (fallback path)", st, forbidden_header);
+  }
+
+  return 0;
+}
+
 // Simple buffered reader to read exactly one HTTP/1 response.
 static char g_buf[256 * 1024];
 static size_t g_len = 0;
@@ -1422,13 +1516,53 @@ static int test_te_cl_conflict(const char *host, const char *port,
     die("send failed: %s", strerror(errno));
   }
 
-  if (read_one_response_buffered(fd, 400, verbose) != 0) {
+  if (read_one_response_prefix_expect_header(fd,
+                                             400,
+                                             "Date",
+                                             verbose)
+      != 0) {
     close(fd);
-    die("read failed");
+    die("read failed (missing Date header or wrong status)");
   }
 
   close(fd);
   info("te_cl_conflict: OK");
+  return 0;
+}
+
+static int test_te_cl_conflict_fallback_400(const char *host,
+                                            const char *port,
+                                            int nodelay,
+                                            int timeout_ms,
+                                            int verbose) {
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *payload =
+      "GET / HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Content-Length: 5\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+      "0\r\n\r\n";
+
+  if (send_all(fd, payload, strlen(payload)) < 0) {
+    close(fd);
+    die("send failed: %s", strerror(errno));
+  }
+
+  if (read_one_response_prefix_expect_no_header(fd,
+                                                400,
+                                                "Date",
+                                                verbose)
+      != 0) {
+    close(fd);
+    die("read failed (expected fallback 400 without Date header)");
+  }
+
+  close(fd);
+  info("te_cl_conflict_fallback_400: OK");
   return 0;
 }
 
@@ -1602,13 +1736,61 @@ static int test_body_timeout_408(const char *host, const char *port,
   ts.tv_nsec = 600 * 1000 * 1000L; // 600ms
   nanosleep(&ts, NULL);
 
-  if (read_one_response_buffered(fd, 408, verbose) != 0) {
+  if (read_one_response_prefix_expect_header(fd,
+                                             408,
+                                             "Date",
+                                             verbose)
+      != 0) {
     close(fd);
-    die("read failed");
+    die("read failed (missing Date header or wrong status)");
   }
 
   close(fd);
   info("body_timeout_408: OK");
+  return 0;
+}
+
+static int test_body_timeout_fallback_408(const char *host,
+                                          const char *port,
+                                          int nodelay,
+                                          int timeout_ms,
+                                          int verbose) {
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *hdr =
+      "GET / HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Content-Length: 5\r\n"
+      "Connection: keep-alive\r\n"
+      "\r\n";
+
+  if (send_all(fd, hdr, strlen(hdr)) < 0) {
+    close(fd);
+    die("send hdr failed: %s", strerror(errno));
+  }
+
+  if (send_all(fd, "h", 1) < 0) {
+    close(fd);
+    die("send body byte failed: %s", strerror(errno));
+  }
+
+  struct timespec ts;
+  ts.tv_sec = 0;
+  ts.tv_nsec = 600 * 1000 * 1000L; // 600ms
+  nanosleep(&ts, NULL);
+
+  if (read_one_response_prefix_expect_no_header(fd,
+                                                408,
+                                                "Date",
+                                                verbose)
+      != 0) {
+    close(fd);
+    die("read failed (expected fallback 408 without Date header)");
+  }
+
+  close(fd);
+  info("body_timeout_fallback_408: OK");
   return 0;
 }
 
@@ -1701,9 +1883,13 @@ static int test_expect_100_continue_body_timeout_408(const char *host,
   ts.tv_nsec = 600 * 1000 * 1000L; // 600ms, body_timeout_ms in itest is 200ms
   nanosleep(&ts, NULL);
 
-  if (read_one_response_buffered(fd, 408, verbose) != 0) {
+  if (read_one_response_prefix_expect_header(fd,
+                                             408,
+                                             "Date",
+                                             verbose)
+      != 0) {
     close(fd);
-    die("read failed");
+    die("read failed (missing Date header or wrong status)");
   }
 
   close(fd);
@@ -1820,9 +2006,13 @@ static int test_path_dot_segments_normalize_not_400(const char *host,
   }
 
   // Path normalization should not be treated as parse error; expected static miss.
-  if (read_one_response_buffered(fd, 404, verbose) != 0) {
+  if (read_one_response_prefix_expect_header(fd,
+                                             404,
+                                             "Date",
+                                             verbose)
+      != 0) {
     close(fd);
-    die("read failed");
+    die("read failed (missing Date header or wrong status)");
   }
 
   close(fd);
@@ -3644,11 +3834,13 @@ static void usage(const char *prog) {
           "  chunked-separate [-H host] [-P port] [--nodelay] [--allow-any-status] [-v]\n"
           "  chunked-split-first-byte [-H host] [-P port] [--nodelay] [--allow-any-status] [-v]\n"
           "  te-cl-conflict [-H host] [-P port] [--nodelay] [-v]\n"
+          "  te-cl-conflict-fallback [-H host] [-P port] [--nodelay] [-v]\n"
           "  dup-cl-reject [-H host] [-P port] [--nodelay] [-v]\n"
           "  te-trailers-reject [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-too-large-cl [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-too-large-chunked [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-timeout [-H host] [-P port] [--nodelay] [-v]\n"
+          "  body-timeout-fallback [-H host] [-P port] [--nodelay] [-v]\n"
           "  expect-100-continue-ok [-H host] [-P port] [--nodelay] [-v]\n"
           "  expect-unsupported-reject [-H host] [-P port] [--nodelay] [-v]\n"
           "  expect-100-continue-timeout [-H host] [-P port] [--nodelay] [-v]\n"
@@ -3763,6 +3955,10 @@ int main(int argc, char **argv) {
     return test_te_cl_conflict(host, port, nodelay, timeout_ms, verbose);
   }
 
+  if (!strcmp(mode, "te-cl-conflict-fallback")) {
+    return test_te_cl_conflict_fallback_400(host, port, nodelay, timeout_ms, verbose);
+  }
+
   if (!strcmp(mode, "dup-cl-reject")) {
     return test_dup_content_length_reject(host, port, nodelay, timeout_ms,
                                           verbose);
@@ -3783,6 +3979,10 @@ int main(int argc, char **argv) {
 
   if (!strcmp(mode, "body-timeout")) {
     return test_body_timeout_408(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "body-timeout-fallback")) {
+    return test_body_timeout_fallback_408(host, port, nodelay, timeout_ms, verbose);
   }
 
   if (!strcmp(mode, "expect-100-continue-ok")) {

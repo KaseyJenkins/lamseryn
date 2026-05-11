@@ -15,6 +15,7 @@
 #include "include/ring_ops.h"
 #include "include/conn_deadline.h"
 #include "include/conn_close.h"
+#include "include/tx.h"
 
 static inline int tw_conn_is_body_in_progress(const struct conn *c) {
   return c && !c->dl.ka_idle && c->h1.headers_done && !c->h1.message_done;
@@ -287,17 +288,44 @@ void tw_process_tick(struct worker_ctx *w, uint64_t now_ms) {
           rc_close = schedule_or_sync_close(w, fd);
           alive_after_action = (rc_close == 0);
         } else {
-          cur->tx.resp_kind = RK_408;
-          {
-            struct response_view rv = request_select_response(RK_408, 0);
-            cur->tx.write_buf = rv.buf;
-            cur->tx.write_len = rv.len;
+          struct request_response_plan plan = request_build_response_plan(RK_408,
+                                                                          /*keepalive=*/0,
+                                                                          /*drain_after_headers=*/0,
+                                                                          /*close_after_send=*/1);
+          const char *buf = plan.response.buf;
+          size_t len = plan.response.len;
+          if (plan.status_line) {
+            const char *built_buf = NULL;
+            size_t built_len = 0;
+            if (tx_build_headers(&cur->tx,
+                                 plan.status_line,
+                                 /*content_type=*/NULL,
+                                 /*emit_content_length=*/1,
+                                 /*content_len=*/0,
+                                 /*body=*/NULL,
+                                 /*body_send_len=*/0,
+                                 plan.keepalive,
+                                 plan.drain_after_headers,
+                                 /*extra_headers=*/NULL,
+                                 &built_buf,
+                                 &built_len)
+                == 0) {
+              buf = built_buf;
+              len = built_len;
+            }
           }
-          cur->tx.write_off = 0;
+          struct tx_next_io out = {0};
+          (void)tx_begin_headers(&cur->tx,
+                                 plan.kind,
+                                 buf,
+                                 len,
+                                 plan.keepalive,
+                                 plan.drain_after_headers,
+                                 &out);
           cur->dl.closing = 1;
 
           tw_conn_ref(cur);
-          io_uring_prep_send(sqe_w, fd, cur->tx.write_buf, cur->tx.write_len, MSG_NOSIGNAL);
+          io_uring_prep_send(sqe_w, fd, out.buf, out.len, MSG_NOSIGNAL);
           io_uring_sqe_set_data64(sqe_w, (uint64_t)(uintptr_t)&cur->op_write);
           mark_post(w);
         }

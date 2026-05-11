@@ -242,6 +242,7 @@ TEST t_process_tick_header_timeout_stages_408_send(void) {
   ASSERT_EQ((int)c->dl.deadline_active, 0);
   ASSERT_EQ((int)c->refcnt, 2);
 
+  tx_discard(&c->tx);
   free(c);
   close_ring(&w.ring);
   PASS();

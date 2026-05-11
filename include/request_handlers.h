@@ -12,6 +12,7 @@ struct request_response_plan {
   int keepalive;
   int drain_after_headers;
   int close_after_send;
+  const char *status_line;
   struct response_view response;
 };
 

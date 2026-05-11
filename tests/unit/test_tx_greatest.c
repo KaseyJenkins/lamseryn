@@ -153,6 +153,7 @@ TEST t_build_headers_null_type_no_emit_cl_omits_both(void) {
                            &buf, &len);
   ASSERT_EQ(r, 0);
   ASSERT(buf != NULL && len > 0);
+  ASSERT(strstr(buf, "Date: ") != NULL);
   ASSERT_EQ(strstr(buf, "Content-Type:"), NULL);
   ASSERT_EQ(strstr(buf, "Content-Length:"), NULL);
   tx_discard(&tx);
@@ -178,6 +179,7 @@ TEST t_build_headers_null_type_emit_cl_zero(void) {
                            &buf, &len);
   ASSERT_EQ(r, 0);
   ASSERT(buf != NULL && len > 0);
+  ASSERT(strstr(buf, "Date: ") != NULL);
   ASSERT_EQ(strstr(buf, "Content-Type:"), NULL);
   ASSERT(strstr(buf, "Content-Length: 0\r\n") != NULL);
   tx_discard(&tx);
@@ -203,6 +205,7 @@ TEST t_build_headers_type_provided_emits_both(void) {
                            &buf, &len);
   ASSERT_EQ(r, 0);
   ASSERT(buf != NULL && len > 0);
+  ASSERT(strstr(buf, "Date: ") != NULL);
   ASSERT(strstr(buf, "Content-Type: text/plain\r\n") != NULL);
   ASSERT(strstr(buf, "Content-Length: 42\r\n") != NULL);
   tx_discard(&tx);

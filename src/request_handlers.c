@@ -33,6 +33,35 @@ extern const size_t RESP_503_len;
 
 struct request_response_plan request_build_static_fallback_plan(int open_err);
 
+static const char *request_response_status_line(enum resp_kind kind) {
+  switch (kind) {
+  case RK_400:
+    return "400 Bad Request";
+  case RK_403:
+    return "403 Forbidden";
+  case RK_404:
+    return "404 Not Found";
+  case RK_405:
+    return "405 Method Not Allowed";
+  case RK_408:
+    return "408 Request Timeout";
+  case RK_413:
+    return "413 Payload Too Large";
+  case RK_431:
+    return "431 Request Header Fields Too Large";
+  case RK_500:
+    return "500 Internal Server Error";
+  case RK_501:
+    return "501 Not Implemented";
+#if ENABLE_OVERLOAD_503
+  case RK_503:
+    return "503 Service Unavailable";
+#endif
+  default:
+    return NULL;
+  }
+}
+
 struct response_view request_select_response(enum resp_kind kind, int keepalive) {
   struct response_view rv = {0};
   (void)keepalive;
@@ -96,6 +125,7 @@ struct request_response_plan request_build_response_plan(enum resp_kind kind,
   plan.keepalive = keepalive;
   plan.drain_after_headers = drain_after_headers;
   plan.close_after_send = close_after_send;
+  plan.status_line = request_response_status_line(kind);
   plan.response = request_select_response(kind, keepalive);
   return plan;
 }

@@ -1323,11 +1323,33 @@ void stage_header_response_send(struct worker_ctx *w,
                                                                   effective_keepalive,
                                                                   drain_after_headers,
                                                                   effective_close_after_send);
+  const char *buf = plan.response.buf;
+  size_t len = plan.response.len;
+  if (plan.status_line) {
+    const char *built_buf = NULL;
+    size_t built_len = 0;
+    if (tx_build_headers(&c->tx,
+                         plan.status_line,
+                         /*content_type=*/NULL,
+                         /*emit_content_length=*/1,
+                         /*content_len=*/0,
+                         /*body=*/NULL,
+                         /*body_send_len=*/0,
+                         plan.keepalive,
+                         plan.drain_after_headers,
+                         /*extra_headers=*/NULL,
+                         &built_buf,
+                         &built_len)
+        == 0) {
+      buf = built_buf;
+      len = built_len;
+    }
+  }
   struct tx_next_io out = {0};
   (void)tx_begin_headers(&c->tx,
                          plan.kind,
-                         plan.response.buf,
-                         plan.response.len,
+                         buf,
+                         len,
                          plan.keepalive,
                          plan.drain_after_headers,
                          &out);

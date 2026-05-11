@@ -17,6 +17,7 @@
 #include "include/http_range.h"
 #include "include/request_handlers.h"
 #include "include/static_serve_utils.h"
+#include "include/time_utils.h"
 #include "include/tx.h"
 
 const char *static_serve_mime_type_for_path(const char *path) {
@@ -213,30 +214,11 @@ static size_t static_serve_format_etag(char *buf, size_t cap, const struct stat 
   return (size_t)n;
 }
 
-// Produces: "Sun, 06 Nov 1994 08:49:37 GMT"
-// Uses static English name arrays to be locale-independent (RFC 7231 §7.1.1.1).
-// Returns bytes written (excluding NUL), or 0 on failure.
 static size_t static_serve_format_last_modified(char *buf, size_t cap, const struct stat *st) {
   if (!buf || cap == 0 || !st) {
     return 0;
   }
-  static const char *const days[]   = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-  static const char *const months[] = {"Jan","Feb","Mar","Apr","May","Jun",
-                                        "Jul","Aug","Sep","Oct","Nov","Dec"};
-  struct tm tm;
-  if (!gmtime_r(&st->st_mtim.tv_sec, &tm)) {
-    return 0;
-  }
-  if (tm.tm_wday < 0 || tm.tm_wday > 6 || tm.tm_mon < 0 || tm.tm_mon > 11) {
-    return 0;
-  }
-  int n = snprintf(buf, cap, "%s, %02d %s %04d %02d:%02d:%02d GMT",
-                   days[tm.tm_wday], tm.tm_mday, months[tm.tm_mon],
-                   1900 + tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec);
-  if (n <= 0 || (size_t)n >= cap) {
-    return 0;
-  }
-  return (size_t)n;
+  return time_format_http_date(buf, cap, st->st_mtim.tv_sec);
 }
 
 // Only handles the preferred IMF-fixdate format: "Sun, 06 Nov 1994 08:49:37 GMT".

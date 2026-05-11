@@ -62,50 +62,40 @@ TEST t_ok_variants_have_no_fixed_response_mapping(void) {
 }
 
 TEST t_errors_map(void) {
-  struct response_view r400 = request_select_response(RK_400, 0);
-  ASSERT_EQ(r400.buf, RESP_400);
-  ASSERT_EQ(r400.len, RESP_400_len);
+  struct request_response_plan p400 = request_build_response_plan(RK_400, 0, 0, 1);
+  ASSERT_STR_EQ(p400.status_line, "400 Bad Request");
+  ASSERT_EQ(p400.keepalive, 0);
 
-  struct response_view r403 = request_select_response(RK_403, 0);
-  ASSERT_EQ(r403.buf, RESP_403);
-  ASSERT_EQ(r403.len, RESP_403_len);
+  struct request_response_plan p403 = request_build_response_plan(RK_403, 0, 0, 1);
+  ASSERT_STR_EQ(p403.status_line, "403 Forbidden");
 
-  struct response_view r404 = request_select_response(RK_404, 0);
-  ASSERT_EQ(r404.buf, RESP_404);
-  ASSERT_EQ(r404.len, RESP_404_len);
+  struct request_response_plan p404 = request_build_response_plan(RK_404, 0, 0, 1);
+  ASSERT_STR_EQ(p404.status_line, "404 Not Found");
 
-  struct response_view r405 = request_select_response(RK_405, 0);
-  ASSERT_EQ(r405.buf, RESP_405);
-  ASSERT_EQ(r405.len, RESP_405_len);
+  struct request_response_plan p405 = request_build_response_plan(RK_405, 0, 0, 1);
+  ASSERT_STR_EQ(p405.status_line, "405 Method Not Allowed");
 
-  struct response_view r413 = request_select_response(RK_413, 0);
-  ASSERT_EQ(r413.buf, RESP_413);
-  ASSERT_EQ(r413.len, RESP_413_len);
+  struct request_response_plan p413 = request_build_response_plan(RK_413, 0, 0, 1);
+  ASSERT_STR_EQ(p413.status_line, "413 Payload Too Large");
 
-  struct response_view r431 = request_select_response(RK_431, 0);
-  ASSERT_EQ(r431.buf, RESP_431);
-  ASSERT_EQ(r431.len, RESP_431_len);
+  struct request_response_plan p431 = request_build_response_plan(RK_431, 0, 1, 0);
+  ASSERT_STR_EQ(p431.status_line, "431 Request Header Fields Too Large");
 
-  struct response_view r501 = request_select_response(RK_501, 0);
-  ASSERT_EQ(r501.buf, RESP_501);
-  ASSERT_EQ(r501.len, RESP_501_len);
+  struct request_response_plan p501 = request_build_response_plan(RK_501, 0, 0, 1);
+  ASSERT_STR_EQ(p501.status_line, "501 Not Implemented");
 
-  struct response_view r408 = request_select_response(RK_408, 0);
-  ASSERT_EQ(r408.buf, RESP_408);
-  ASSERT_EQ(r408.len, RESP_408_len);
+  struct request_response_plan p408 = request_build_response_plan(RK_408, 0, 0, 1);
+  ASSERT_STR_EQ(p408.status_line, "408 Request Timeout");
 
-  struct response_view r500 = request_select_response(RK_500, 0);
-  ASSERT_EQ(r500.buf, RESP_500);
-  ASSERT_EQ(r500.len, RESP_500_len);
+  struct request_response_plan p500 = request_build_response_plan(RK_500, 0, 0, 1);
+  ASSERT_STR_EQ(p500.status_line, "500 Internal Server Error");
 
 #if ENABLE_OVERLOAD_503
-  struct response_view r503 = request_select_response(RK_503, 0);
-  ASSERT_EQ(r503.buf, RESP_503);
-  ASSERT_EQ(r503.len, RESP_503_len);
+  struct request_response_plan p503 = request_build_response_plan(RK_503, 0, 0, 1);
+  ASSERT_STR_EQ(p503.status_line, "503 Service Unavailable");
 #else
-  struct response_view r503 = request_select_response(RK_503, 0);
-  ASSERT_EQ(r503.buf, NULL);
-  ASSERT_EQ(r503.len, 0);
+  struct request_response_plan p503 = request_build_response_plan(RK_503, 0, 0, 1);
+  ASSERT_EQ(p503.status_line, NULL);
 #endif
   PASS();
 }
@@ -163,8 +153,7 @@ TEST t_route_plan_method_not_allowed_override(void) {
   ASSERT_EQ(plan.method_not_allowed_response.keepalive, 0);
   ASSERT_EQ(plan.method_not_allowed_response.drain_after_headers, 0);
   ASSERT_EQ(plan.method_not_allowed_response.close_after_send, 1);
-  ASSERT_EQ(plan.method_not_allowed_response.response.buf, RESP_405);
-  ASSERT_EQ(plan.method_not_allowed_response.response.len, RESP_405_len);
+  ASSERT_STR_EQ(plan.method_not_allowed_response.status_line, "405 Method Not Allowed");
   PASS();
 }
 
@@ -198,16 +187,14 @@ TEST t_static_fallback_plan_mapping(void) {
   ASSERT_EQ(p403.keepalive, 0);
   ASSERT_EQ(p403.drain_after_headers, 0);
   ASSERT_EQ(p403.close_after_send, 1);
-  ASSERT_EQ(p403.response.buf, RESP_403);
-  ASSERT_EQ(p403.response.len, RESP_403_len);
+  ASSERT_STR_EQ(p403.status_line, "403 Forbidden");
 
   struct request_response_plan p404 = request_build_static_fallback_plan(ENOENT);
   ASSERT_EQ(p404.kind, RK_404);
   ASSERT_EQ(p404.keepalive, 0);
   ASSERT_EQ(p404.drain_after_headers, 0);
   ASSERT_EQ(p404.close_after_send, 1);
-  ASSERT_EQ(p404.response.buf, RESP_404);
-  ASSERT_EQ(p404.response.len, RESP_404_len);
+  ASSERT_STR_EQ(p404.status_line, "404 Not Found");
   PASS();
 }
 

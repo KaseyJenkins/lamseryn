@@ -183,7 +183,7 @@ $(TEST_BIN_STORE): unit/test_conn_store_greatest.c ../src/conn_store.c ../src/lo
 $(TEST_BIN_HANDLERS): unit/test_request_handlers_greatest.c ../src/request_handlers.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS)
 
-$(TEST_BIN_WHEEL): unit/test_timing_wheel_greatest.c ../src/timing_wheel.c ../src/request_handlers.c $(LIBURING_DEPS) | $(BUILD)
+$(TEST_BIN_WHEEL): unit/test_timing_wheel_greatest.c ../src/timing_wheel.c ../src/request_handlers.c ../src/tx.c $(LIBURING_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
 $(TEST_BIN_BUFFERPOOL): unit/test_buffer_pool_greatest.c ../src/buffer_pool.c ../src/logger.c $(LIBURING_DEPS) | $(BUILD)

@@ -2,13 +2,71 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "conn.h"
+#include "time_utils.h"
 #include "tx.h"
 
 static inline int tx_is_eagain(ssize_t sent) {
   return (sent == -EAGAIN || sent == -EWOULDBLOCK);
 }
+
+#if ENABLE_ITEST_ECHO
+static int tx_status_in_forced_fail_list(const char *status_line,
+                                         const char *list) {
+  if (!status_line || !list || !list[0]) {
+    return 0;
+  }
+
+  if (!status_line[0] || !status_line[1] || !status_line[2]) {
+    return 0;
+  }
+
+  // status_line is expected to start with "XYZ ...".
+  const char c0 = status_line[0];
+  const char c1 = status_line[1];
+  const char c2 = status_line[2];
+  if (c0 < '0' || c0 > '9' || c1 < '0' || c1 > '9' || c2 < '0' || c2 > '9') {
+    return 0;
+  }
+
+  const char *p = list;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ',') {
+      p++;
+    }
+    if (!*p) {
+      break;
+    }
+
+    const char *token_start = p;
+    while (*p && *p != ',') {
+      p++;
+    }
+    const char *token_end = p;
+    while (token_end > token_start
+           && (token_end[-1] == ' ' || token_end[-1] == '\t')) {
+      token_end--;
+    }
+
+    size_t token_len = (size_t)(token_end - token_start);
+    if (token_len == 3
+        && token_start[0] == c0
+        && token_start[1] == c1
+        && token_start[2] == c2) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+static int tx_test_force_header_build_fail(const char *status_line) {
+  const char *list = getenv("TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS");
+  return tx_status_in_forced_fail_list(status_line, list);
+}
+#endif
 
 void tx_reset(struct tx_state_t *tx) {
   if (!tx) {
@@ -82,12 +140,32 @@ int tx_build_headers(struct tx_state_t *tx,
     return -1;
   }
 
-  const char *conn_hdr = keepalive ? "keep-alive" : "close";
-
 #if ENABLE_ITEST_ECHO
   const char *itest_static_mode = tx->itest_static_mode;
   tx->itest_static_mode = NULL;
 
+  // Integration-test hook: force header-builder failure for selected statuses
+  // to exercise emergency fallback paths.
+  if (tx_test_force_header_build_fail(status_line)) {
+    return -1;
+  }
+#endif
+
+  const char *conn_hdr = keepalive ? "keep-alive" : "close";
+  const char *date_hdr = "";
+  char date_line[64];
+  time_t now = time(NULL);
+  if (now != (time_t)-1) {
+    char date_value[40];
+    if (time_format_http_date(date_value, sizeof(date_value), now) > 0) {
+      int dn = snprintf(date_line, sizeof(date_line), "Date: %s\r\n", date_value);
+      if (dn > 0 && (size_t)dn < sizeof(date_line)) {
+        date_hdr = date_line;
+      }
+    }
+  }
+
+#if ENABLE_ITEST_ECHO
   const char *itest_hdr = "";
   char itest_line[96];
   if (itest_static_mode) {
@@ -129,10 +207,10 @@ int tx_build_headers(struct tx_state_t *tx,
     content_lines[0] = '\0';
   }
 
-  char head[1024];
-  int hlen = snprintf(head,
-                      sizeof(head),
+  int hlen = snprintf(NULL,
+                      0,
                       "HTTP/1.1 %s\r\n"
+                      "%s"
                       "%s"
                       "Connection: %s\r\n"
 #if ENABLE_ITEST_ECHO
@@ -141,6 +219,7 @@ int tx_build_headers(struct tx_state_t *tx,
                       "%s"
                       "\r\n",
                       status_line,
+                      date_hdr,
                       content_lines,
                       conn_hdr
 #if ENABLE_ITEST_ECHO
@@ -150,7 +229,7 @@ int tx_build_headers(struct tx_state_t *tx,
                       ,
                       extra_headers
   );
-  if (hlen <= 0 || (size_t)hlen >= sizeof(head)) {
+  if (hlen <= 0) {
     return -1;
   }
 
@@ -160,7 +239,31 @@ int tx_build_headers(struct tx_state_t *tx,
     return -1;
   }
 
-  memcpy(owned, head, (size_t)hlen);
+  int written = snprintf(owned,
+                         (size_t)hlen + 1,
+                         "HTTP/1.1 %s\r\n"
+                         "%s"
+                         "%s"
+                         "Connection: %s\r\n"
+#if ENABLE_ITEST_ECHO
+                         "%s"
+#endif
+                         "%s"
+                         "\r\n",
+                         status_line,
+                         date_hdr,
+                         content_lines,
+                         conn_hdr
+#if ENABLE_ITEST_ECHO
+                         ,
+                         itest_hdr
+#endif
+                         ,
+                         extra_headers);
+  if (written != hlen) {
+    free(owned);
+    return -1;
+  }
   if (body_send_len) {
     memcpy(owned + (size_t)hlen, body, body_send_len);
   }
