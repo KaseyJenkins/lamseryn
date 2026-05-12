@@ -35,29 +35,33 @@
 // Active connection count (process-global, atomic)
 // ---------------------------------------------------------------------------
 
-static volatile uint64_t g_active_conns_global = 0;
+static uint64_t g_active_conns_global = 0;
 
 uint64_t active_conns_inc(void) {
-  return __sync_add_and_fetch((uint64_t *)&g_active_conns_global, 1);
+  return __atomic_add_fetch(&g_active_conns_global, 1, __ATOMIC_SEQ_CST);
 }
 
 uint64_t active_conns_dec(void) {
   for (;;) {
     uint64_t before =
-      __sync_add_and_fetch((uint64_t *)&g_active_conns_global, 0);
+      __atomic_load_n(&g_active_conns_global, __ATOMIC_SEQ_CST);
     if (before == 0) {
       return 0;
     }
-    if (__sync_bool_compare_and_swap((uint64_t *)&g_active_conns_global,
-                                     before,
-                                     before - 1)) {
-      return before - 1;
+    uint64_t desired = before - 1;
+    if (__atomic_compare_exchange_n(&g_active_conns_global,
+                                    &before,
+                                    desired,
+                                    0,
+                                    __ATOMIC_SEQ_CST,
+                                    __ATOMIC_SEQ_CST)) {
+      return desired;
     }
   }
 }
 
 uint64_t active_conns_total(void) {
-  return __sync_add_and_fetch((uint64_t *)&g_active_conns_global, 0);
+  return __atomic_load_n(&g_active_conns_global, __ATOMIC_SEQ_CST);
 }
 
 // ---------------------------------------------------------------------------
