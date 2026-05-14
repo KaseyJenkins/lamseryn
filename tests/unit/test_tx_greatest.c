@@ -1,7 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "../vendor/greatest_color.h"
 #include "../vendor/greatest.h"
 
+#include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #include "include/conn.h"
 #include "include/tx.h"
@@ -134,6 +138,63 @@ SUITE(s_tx) {
 // tx_build_headers: emit_content_length parameter
 // ---------------------------------------------------------------------------
 
+static int extract_date_line(const char *buf, char *out, size_t out_cap) {
+  if (!buf || !out || out_cap == 0) {
+    return -1;
+  }
+  const char *date = strstr(buf, "Date: ");
+  if (!date) {
+    return -1;
+  }
+  const char *eol = strstr(date, "\r\n");
+  if (!eol) {
+    return -1;
+  }
+  size_t n = (size_t)(eol - date);
+  if (n + 1 > out_cap) {
+    return -1;
+  }
+  memcpy(out, date, n);
+  out[n] = '\0';
+  return 0;
+}
+
+static int build_headers_capture_date(struct tx_state_t *tx, char *date_out, size_t out_cap) {
+  const char *buf = NULL;
+  size_t len = 0;
+  int r = tx_build_headers(tx,
+                           "200 OK",
+                           /*content_type=*/"text/plain",
+                           /*emit_content_length=*/1,
+                           /*content_len=*/42,
+                           /*body=*/NULL,
+                           /*body_send_len=*/0,
+                           /*keepalive=*/1,
+                           /*drain_after_headers=*/0,
+                           /*extra_headers=*/NULL,
+                           &buf,
+                           &len);
+  if (r != 0 || !buf || len == 0) {
+    return -1;
+  }
+  return extract_date_line(buf, date_out, out_cap);
+}
+
+static uint64_t monotonic_ms(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0;
+  }
+  return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)(ts.tv_nsec / 1000000ull);
+}
+
+static void sleep_ms(unsigned ms) {
+  struct timespec req;
+  req.tv_sec = (time_t)(ms / 1000u);
+  req.tv_nsec = (long)((ms % 1000u) * 1000000u);
+  (void)nanosleep(&req, NULL);
+}
+
 // 304 case: content_type=NULL, emit_content_length=0 -> omit both headers.
 TEST t_build_headers_null_type_no_emit_cl_omits_both(void) {
   struct tx_state_t tx;
@@ -212,10 +273,112 @@ TEST t_build_headers_type_provided_emits_both(void) {
   PASS();
 }
 
+TEST t_build_headers_rejects_total_size_overflow(void) {
+  struct tx_state_t tx;
+  memset(&tx, 0, sizeof(tx));
+
+  const char *buf = NULL;
+  size_t len = 0;
+  static const char body_byte = 'x';
+
+  int r = tx_build_headers(&tx,
+                           "200 OK",
+                           /*content_type=*/"text/plain",
+                           /*emit_content_length=*/1,
+                           /*content_len=*/42,
+                           /*body=*/&body_byte,
+                           /*body_send_len=*/SIZE_MAX,
+                           /*keepalive=*/1,
+                           /*drain_after_headers=*/0,
+                           /*extra_headers=*/NULL,
+                           &buf,
+                           &len);
+  ASSERT_EQ(r, -1);
+  ASSERT_EQ(buf, NULL);
+  ASSERT_EQ((int)len, 0);
+  ASSERT_EQ(tx.dyn_buf, NULL);
+  PASS();
+}
+
+TEST t_build_headers_date_reused_within_same_second(void) {
+  struct tx_state_t tx;
+  memset(&tx, 0, sizeof(tx));
+
+  uint64_t start = monotonic_ms();
+  if (start == 0) {
+    tx_discard(&tx);
+    FAILm("monotonic clock unavailable");
+  }
+
+  uint64_t deadline = start + 1500ull;
+  while (1) {
+    char date1[64];
+    char date2[64];
+    time_t t0 = time(NULL);
+    ASSERT_NEQ(t0, (time_t)-1);
+    ASSERT_EQ(build_headers_capture_date(&tx, date1, sizeof(date1)), 0);
+    time_t t1 = time(NULL);
+    ASSERT_NEQ(t1, (time_t)-1);
+    ASSERT_EQ(build_headers_capture_date(&tx, date2, sizeof(date2)), 0);
+    time_t t2 = time(NULL);
+    ASSERT_NEQ(t2, (time_t)-1);
+
+    if (t0 == t1 && t1 == t2) {
+      ASSERT_EQ(strcmp(date1, date2), 0);
+      tx_discard(&tx);
+      PASS();
+    }
+
+    if (monotonic_ms() >= deadline) {
+      break;
+    }
+
+    sleep_ms(1);
+  }
+
+  tx_discard(&tx);
+  FAILm("timeout while sampling two header builds within the same second");
+}
+
+TEST t_build_headers_date_refreshes_after_second_rollover(void) {
+  struct tx_state_t tx;
+  memset(&tx, 0, sizeof(tx));
+
+  char date1[64];
+  char date2[64];
+  ASSERT_EQ(build_headers_capture_date(&tx, date1, sizeof(date1)), 0);
+
+  time_t sec = time(NULL);
+  ASSERT_NEQ(sec, (time_t)-1);
+  uint64_t start = monotonic_ms();
+  if (start == 0) {
+    tx_discard(&tx);
+    FAILm("monotonic clock unavailable");
+  }
+
+  uint64_t deadline = start + 3000ull;
+  while (time(NULL) == sec) {
+    if (monotonic_ms() >= deadline) {
+      tx_discard(&tx);
+      FAILm("timeout waiting for second rollover");
+    }
+    sleep_ms(1);
+  }
+
+  ASSERT_EQ(build_headers_capture_date(&tx, date2, sizeof(date2)), 0);
+  ASSERT_NEQ(strcmp(date1, date2), 0);
+
+  tx_discard(&tx);
+  PASS();
+}
+
 SUITE(s_tx_build_headers) {
   RUN_TEST(t_build_headers_null_type_no_emit_cl_omits_both);
   RUN_TEST(t_build_headers_null_type_emit_cl_zero);
   RUN_TEST(t_build_headers_type_provided_emits_both);
+  RUN_TEST(t_build_headers_rejects_total_size_overflow);
+  RUN_TEST(t_build_headers_date_reused_within_same_second);
+  RUN_TEST(t_build_headers_date_refreshes_after_second_rollover);
 }
 
 GREATEST_MAIN_DEFS();

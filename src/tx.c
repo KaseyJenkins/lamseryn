@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,42 @@
 
 static inline int tx_is_eagain(ssize_t sent) {
   return (sent == -EAGAIN || sent == -EWOULDBLOCK);
+}
+
+static _Thread_local time_t g_tx_cached_date_sec = (time_t)-1;
+static _Thread_local char g_tx_cached_date_line[64];
+
+static const char *tx_cached_date_header_line(void) {
+  time_t now = time(NULL);
+  if (now == (time_t)-1) {
+    g_tx_cached_date_sec = (time_t)-1;
+    g_tx_cached_date_line[0] = '\0';
+    return "";
+  }
+
+  if (g_tx_cached_date_sec == now && g_tx_cached_date_line[0] != '\0') {
+    return g_tx_cached_date_line;
+  }
+
+  char date_value[40];
+  if (time_format_http_date(date_value, sizeof(date_value), now) == 0) {
+    g_tx_cached_date_sec = (time_t)-1;
+    g_tx_cached_date_line[0] = '\0';
+    return "";
+  }
+
+  int dn = snprintf(g_tx_cached_date_line,
+                    sizeof(g_tx_cached_date_line),
+                    "Date: %s\r\n",
+                    date_value);
+  if (dn <= 0 || (size_t)dn >= sizeof(g_tx_cached_date_line)) {
+    g_tx_cached_date_sec = (time_t)-1;
+    g_tx_cached_date_line[0] = '\0';
+    return "";
+  }
+
+  g_tx_cached_date_sec = now;
+  return g_tx_cached_date_line;
 }
 
 #if ENABLE_ITEST_ECHO
@@ -152,18 +189,7 @@ int tx_build_headers(struct tx_state_t *tx,
 #endif
 
   const char *conn_hdr = keepalive ? "keep-alive" : "close";
-  const char *date_hdr = "";
-  char date_line[64];
-  time_t now = time(NULL);
-  if (now != (time_t)-1) {
-    char date_value[40];
-    if (time_format_http_date(date_value, sizeof(date_value), now) > 0) {
-      int dn = snprintf(date_line, sizeof(date_line), "Date: %s\r\n", date_value);
-      if (dn > 0 && (size_t)dn < sizeof(date_line)) {
-        date_hdr = date_line;
-      }
-    }
-  }
+  const char *date_hdr = tx_cached_date_header_line();
 
 #if ENABLE_ITEST_ECHO
   const char *itest_hdr = "";
@@ -230,6 +256,10 @@ int tx_build_headers(struct tx_state_t *tx,
                       extra_headers
   );
   if (hlen <= 0) {
+    return -1;
+  }
+
+  if (body_send_len > (SIZE_MAX - (size_t)hlen - 1u)) {
     return -1;
   }
 
