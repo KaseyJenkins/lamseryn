@@ -45,4 +45,4 @@ struct req_hdr_entry;
 const char *http_header_find_value(const struct req_hdr_entry *hdrs,
                                    uint8_t hdr_count,
                                    enum http_header_id id,
-                                   uint16_t *out_len);
+                                   uint8_t *out_len);

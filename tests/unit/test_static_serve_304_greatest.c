@@ -63,14 +63,14 @@ int tx_begin_sendfile(struct tx_state_t *tx, off_t off, size_t sz) {
 // Controllable stub for http_header_find_value used by check_not_modified.
 // ---------------------------------------------------------------------------
 static const char *g_stub_inm_value = NULL;
-static uint16_t g_stub_inm_len = 0;
+static uint8_t g_stub_inm_len = 0;
 static const char *g_stub_ims_value = NULL;
-static uint16_t g_stub_ims_len = 0;
+static uint8_t g_stub_ims_len = 0;
 
 const char *http_header_find_value(const struct req_hdr_entry *hdrs,
                                    uint8_t hdr_count,
                                    enum http_header_id id,
-                                   uint16_t *out_len) {
+                                   uint8_t *out_len) {
   (void)hdrs;
   (void)hdr_count;
   if (id == HDR_ID_IF_NONE_MATCH) {
@@ -300,9 +300,9 @@ static int do_check(const char *etag, size_t etag_len,
                     const struct stat *st,
                     const char *inm, const char *ims) {
   g_stub_inm_value = inm;
-  g_stub_inm_len = inm ? (uint16_t)strlen(inm) : 0;
+  g_stub_inm_len = inm ? (uint8_t)strlen(inm) : 0;
   g_stub_ims_value = ims;
-  g_stub_ims_len = ims ? (uint16_t)strlen(ims) : 0;
+  g_stub_ims_len = ims ? (uint8_t)strlen(ims) : 0;
 
   struct conn c;
   memset(&c, 0, sizeof(c));

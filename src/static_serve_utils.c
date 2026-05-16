@@ -307,7 +307,7 @@ static int static_serve_check_not_modified(const struct conn *c,
   }
 
   // RFC 7232 §3.2: If-None-Match takes precedence over If-Modified-Since.
-  uint16_t inm_len = 0;
+  uint8_t inm_len = 0;
   const char *inm =
     http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_IF_NONE_MATCH, &inm_len);
   if (inm && inm_len > 0) {
@@ -358,7 +358,7 @@ static int static_serve_check_not_modified(const struct conn *c,
   }
 
   // RFC 7232 §3.3: If-Modified-Since (only when If-None-Match is absent).
-  uint16_t ims_len = 0;
+  uint8_t ims_len = 0;
   const char *ims = http_header_find_value(
     c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_IF_MODIFIED_SINCE, &ims_len);
   if (ims && ims_len > 0) {
@@ -403,7 +403,7 @@ static int static_serve_if_range_matches(const struct conn *c,
     return 1; // no request headers
   }
 
-  uint16_t ir_len = 0;
+  uint8_t ir_len = 0;
   const char *ir =
     http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_IF_RANGE, &ir_len);
   if (!ir || ir_len == 0) {
@@ -414,7 +414,7 @@ static int static_serve_if_range_matches(const struct conn *c,
   if (ir_len >= 2 && ir[0] == '"') {
     // RFC 7233 §3.2: If-Range with ETag uses strong comparison.
     // Weak ETags do not satisfy If-Range.
-    if (etag && etag_len > 0 && ir_len == (uint16_t)etag_len
+    if (etag && etag_len > 0 && ir_len == etag_len
         && memcmp(ir, etag, etag_len) == 0) {
       return 1;
     }
@@ -626,7 +626,7 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
         && http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count,
                                   HDR_ID_RANGE, NULL) != NULL;
       if (!has_range_hdr) {
-        uint16_t ae_len = 0;
+        uint8_t ae_len = 0;
         const char *ae = http_header_find_value(
           c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_ACCEPT_ENCODING, &ae_len);
         if (ae && ae_len > 0) {
@@ -732,7 +732,7 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
 
     // Range handling runs after 304 checks and only for GET.
     if (vh && (vh->features & CFG_FEAT_RANGE) && c->h1.method == HTTP_GET) {
-      uint16_t range_hdr_len = 0;
+      uint8_t range_hdr_len = 0;
       const char *range_hdr =
         http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_RANGE, &range_hdr_len);
       if (range_hdr && range_hdr_len > 0) {

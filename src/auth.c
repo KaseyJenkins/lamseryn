@@ -339,7 +339,7 @@ int auth_basic_check(struct conn *c) {
     goto deny;
   }
 
-  uint16_t val_len = auth_hdr->value_len;
+  uint8_t val_len = auth_hdr->value_len;
   const char *hdr = auth_hdr->value;
   if (!hdr || val_len < 6 || strncasecmp(hdr, "Basic", 5) != 0 || hdr[5] != ' ') {
     goto deny;

@@ -6,6 +6,7 @@
 #include "include/timing_wheel.h"
 #include "include/conn.h"
 #include "include/macros.h"
+#include "include/tx.h"
 
 // timing_wheel.c uses these symbols in tw_process_tick.
 

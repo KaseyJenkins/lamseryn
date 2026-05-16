@@ -288,7 +288,7 @@ static inline void h1_finalize_interested_header(struct conn *c) {
           e->id = (uint8_t)id;
           e->flags = c->h1.hdr_val_raw_truncated ? REQ_HDR_F_VALUE_TRUNCATED : 0u;
           e->value = vv;
-          e->value_len = (uint16_t)vlen;
+          e->value_len = vlen;
         }
       }
     }

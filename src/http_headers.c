@@ -60,7 +60,7 @@ int http_header_lookup_lower(const char *name, size_t name_len, enum http_header
 const char *http_header_find_value(const struct req_hdr_entry *hdrs,
                                    uint8_t hdr_count,
                                    enum http_header_id id,
-                                   uint16_t *out_len) {
+                                   uint8_t *out_len) {
   if (!hdrs || hdr_count == 0) {
     return NULL;
   }

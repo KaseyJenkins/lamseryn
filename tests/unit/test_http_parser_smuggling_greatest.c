@@ -254,7 +254,7 @@ TEST t_authorization_capture_truncation_flag_set_on_overlong_value(void) {
   const struct req_hdr_entry *e = &c.h1.req_hdrs[0];
   ASSERT_EQ((enum http_header_id)e->id, HDR_ID_AUTHORIZATION);
   ASSERT((e->flags & REQ_HDR_F_VALUE_TRUNCATED) != 0u);
-  ASSERT_EQ(e->value_len, (uint16_t)(REQ_HDR_VALUE_MAX - 1));
+  ASSERT_EQ(e->value_len, (uint8_t)(REQ_HDR_VALUE_MAX - 1));
   ASSERT(e->value != NULL);
 
   destroy_conn_parser(&c);

@@ -54,7 +54,7 @@ int tx_begin_sendfile(struct tx_state_t *tx, off_t off, size_t sz) {
 const char *http_header_find_value(const struct req_hdr_entry *hdrs,
                                    uint8_t hdr_count,
                                    enum http_header_id id,
-                                   uint16_t *out_len) {
+                                   uint8_t *out_len) {
   (void)hdrs; (void)hdr_count; (void)id;
   if (out_len) *out_len = 0;
   return NULL;

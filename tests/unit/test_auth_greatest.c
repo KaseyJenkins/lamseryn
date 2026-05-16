@@ -37,7 +37,7 @@ static void reset_auth_stubs(void) {
 const char *http_header_find_value(const struct req_hdr_entry *h,
                                    uint8_t n,
                                    enum http_header_id id,
-                                   uint16_t *len) {
+                                   uint8_t *len) {
   for (uint8_t i = 0; i < n; i++) {
     if ((enum http_header_id)h[i].id != id) {
       continue;
@@ -131,7 +131,7 @@ static void init_auth_header(struct req_hdr_entry *hdr, const char *value) {
   hdr->id = HDR_ID_AUTHORIZATION;
   hdr->flags = 0;
   hdr->value = (char *)value;
-  hdr->value_len = (uint16_t)strlen(value);
+  hdr->value_len = (uint8_t)strlen(value);
 }
 
 static void init_auth_conn(struct conn *c,
