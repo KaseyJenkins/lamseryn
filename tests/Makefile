@@ -4,6 +4,7 @@ CC   := gcc
 CSTD ?= gnu11
 
 SANITIZE ?= none
+TESTS_WERROR ?= 1
 
 ifeq ($(SANITIZE),asan)
 	BUILD := build/asan
@@ -11,6 +12,11 @@ else ifeq ($(SANITIZE),ubsan)
 	BUILD := build/ubsan
 else
 	BUILD := build
+endif
+
+TESTS_WARN_CFLAGS :=
+ifeq ($(TESTS_WERROR),1)
+TESTS_WARN_CFLAGS += -Werror
 endif
 
 # Sanitizer flags (compile + link)
@@ -30,10 +36,11 @@ CFLAGS := -O2 -g -Wall -Wextra -Wvla -pipe -fno-plt -fno-omit-frame-pointer \
           -std=$(CSTD) \
           -I .. \
           -I ../include \
-		  -I ../third_party/inih \
+          -I ../third_party/inih \
           -I ../third_party/llhttp/include \
           -I ../third_party/liburing/src/include \
           -Wno-unused-parameter \
+          $(TESTS_WARN_CFLAGS) \
           $(SAN_CFLAGS)
 
 # Link-time GC drops unreferenced functions.
