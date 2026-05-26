@@ -1323,6 +1323,20 @@ void stage_header_response_send(struct worker_ctx *w,
                                                                   effective_keepalive,
                                                                   drain_after_headers,
                                                                   effective_close_after_send);
+  char extra_headers[1024];
+  const char *extra_headers_ptr = NULL;
+  int extra_headers_rc = request_build_policy_extra_headers(c, plan.kind, extra_headers);
+  plan = request_policy_fail_closed_response_plan(plan, extra_headers_rc);
+  if (extra_headers_rc < 0) {
+    CTR_INC_DEV(w, cnt_policy_header_fail_closed);
+    LOGW_RL(LOGC_HTTP,
+            1000,
+            "policy header assembly failed; fail-closed to 500 (orig kind=%d)",
+            (int)kind);
+  } else if (extra_headers_rc > 0) {
+    extra_headers_ptr = extra_headers;
+  }
+
   const char *buf = plan.response.buf;
   size_t len = plan.response.len;
   if (plan.status_line) {
@@ -1337,7 +1351,7 @@ void stage_header_response_send(struct worker_ctx *w,
                          /*body_send_len=*/0,
                          plan.keepalive,
                          plan.drain_after_headers,
-                         /*extra_headers=*/NULL,
+                         extra_headers_ptr,
                          &built_buf,
                          &built_len)
         == 0) {

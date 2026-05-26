@@ -39,6 +39,64 @@ void auth_store_free(struct auth_store *s) {
   (void)s;
 }
 
+enum config_ini_alloc_failpoint {
+  CONFIG_INI_ALLOC_FAIL_NONE = 0,
+  CONFIG_INI_ALLOC_FAIL_CANDIDATE,
+  CONFIG_INI_ALLOC_FAIL_PARSE_CTX,
+  CONFIG_INI_ALLOC_FAIL_ROUTE_PARSE,
+  CONFIG_INI_ALLOC_FAIL_ROUTE_RESOLVED,
+  CONFIG_INI_ALLOC_FAIL_ROUTE_INDEX,
+  CONFIG_INI_ALLOC_FAIL_VHOST_ROUTE_LIST,
+};
+
+static enum config_ini_alloc_failpoint g_config_ini_alloc_failpoint = CONFIG_INI_ALLOC_FAIL_NONE;
+
+static void reset_config_ini_alloc_failpoint(void) {
+  g_config_ini_alloc_failpoint = CONFIG_INI_ALLOC_FAIL_NONE;
+}
+
+void *test_config_ini_alloc_candidate(size_t size) {
+  if (g_config_ini_alloc_failpoint == CONFIG_INI_ALLOC_FAIL_CANDIDATE) {
+    return NULL;
+  }
+  return malloc(size);
+}
+
+void *test_config_ini_alloc_parse_ctx(size_t nmemb, size_t size) {
+  if (g_config_ini_alloc_failpoint == CONFIG_INI_ALLOC_FAIL_PARSE_CTX) {
+    return NULL;
+  }
+  return calloc(nmemb, size);
+}
+
+void *test_config_ini_alloc_route_parse(size_t nmemb, size_t size) {
+  if (g_config_ini_alloc_failpoint == CONFIG_INI_ALLOC_FAIL_ROUTE_PARSE) {
+    return NULL;
+  }
+  return calloc(nmemb, size);
+}
+
+void *test_config_ini_alloc_route_resolved(size_t nmemb, size_t size) {
+  if (g_config_ini_alloc_failpoint == CONFIG_INI_ALLOC_FAIL_ROUTE_RESOLVED) {
+    return NULL;
+  }
+  return calloc(nmemb, size);
+}
+
+void *test_config_ini_alloc_route_index(size_t nmemb, size_t size) {
+  if (g_config_ini_alloc_failpoint == CONFIG_INI_ALLOC_FAIL_ROUTE_INDEX) {
+    return NULL;
+  }
+  return calloc(nmemb, size);
+}
+
+void *test_config_ini_alloc_vhost_route_list(size_t nmemb, size_t size) {
+  if (g_config_ini_alloc_failpoint == CONFIG_INI_ALLOC_FAIL_VHOST_ROUTE_LIST) {
+    return NULL;
+  }
+  return calloc(nmemb, size);
+}
+
 static int write_temp_ini(const char *content, char out_path[256]) {
   if (!content || !out_path) {
     return -1;
@@ -116,7 +174,58 @@ static int capture_stderr_end(int saved_fd, int read_fd, char *buf, size_t bufsz
 
 static int init_cfg(struct config_t *cfg) {
   reset_auth_store_stub();
+  reset_config_ini_alloc_failpoint();
   return config_set_defaults(cfg);
+}
+
+static void free_loaded_cfg_heap(struct config_t *cfg) {
+  if (!cfg) {
+    return;
+  }
+
+  for (int i = 0; i < cfg->vhost_count; ++i) {
+    struct vhost_t *vh = &cfg->vhosts[i];
+    if (vh->docroot_fd >= 0) {
+      close(vh->docroot_fd);
+      vh->docroot_fd = -1;
+    }
+    for (unsigned h = 0; h < vh->custom_headers_count; ++h) {
+      free(vh->custom_headers[h]);
+      vh->custom_headers[h] = NULL;
+    }
+    vh->custom_headers_count = 0;
+
+    free(vh->route_rules);
+    vh->route_rules = NULL;
+    vh->route_rule_count = 0;
+    vh->route_rule_cap = 0;
+
+    free(vh->security_headers);
+    vh->security_headers = NULL;
+    free(vh->cors);
+    vh->cors = NULL;
+  }
+
+  free(cfg->route_rules);
+  cfg->route_rules = NULL;
+  cfg->route_rule_count = 0;
+}
+
+static int route_ptr_in_cfg_storage(const struct config_t *cfg,
+                                    const struct route_policy_rule *rr) {
+  if (!cfg || !rr || cfg->route_rule_count <= 0) {
+    return 0;
+  }
+
+  uintptr_t base = (uintptr_t)(const void *)cfg->route_rules;
+  uintptr_t ptr = (uintptr_t)(const void *)rr;
+  size_t bytes = (size_t)cfg->route_rule_count * sizeof(cfg->route_rules[0]);
+
+  if (ptr < base || (ptr - base) >= bytes) {
+    return 0;
+  }
+
+  return ((ptr - base) % sizeof(cfg->route_rules[0])) == 0;
 }
 
 TEST t_config_ini_parses_globals_and_vhost(void) {
@@ -1161,7 +1270,7 @@ TEST t_auth_basic_file_load_failure_returns_error(void) {
   PASS();
 }
 
-TEST t_auth_load_failure_unwinds_prior_vhost_resources(void) {
+TEST t_auth_load_failure_keeps_cfg_unchanged(void) {
   const char *ini = "[vhost first]\n"
                     "bind = 127.0.0.1\n"
                     "port = 8102\n"
@@ -1183,14 +1292,469 @@ TEST t_auth_load_failure_unwinds_prior_vhost_resources(void) {
   g_auth_store_load_result = NULL;
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
 
-  ASSERT_EQ(cfg.vhost_count, 2);
-  ASSERT_EQ(cfg.vhosts[0].docroot_fd, -1);
-  ASSERT_EQ(cfg.vhosts[0].custom_headers_count, 0u);
-  ASSERT_EQ(cfg.vhosts[0].custom_headers[0], NULL);
-  ASSERT_EQ(cfg.vhosts[0].auth_store, NULL);
-  ASSERT_EQ(cfg.vhosts[1].auth_store, NULL);
+  ASSERT_EQ(cfg.vhost_count, 0);
+  ASSERT_EQ(cfg.route_rule_count, 0);
   ASSERT_EQ(g_auth_store_load_calls, 1u);
   ASSERT_EQ(strcmp(g_auth_store_load_last_path, "/tmp/missing.htpasswd"), 0);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_cors_and_security_headers_parsed(void) {
+  const char *ini = "[vhost policy]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8104\n"
+                    "security_headers = true\n"
+                    "security_header_set = X-Frame-Options: DENY\n"
+                    "security_header_set = X-Content-Type-Options: nosniff\n"
+                    "cors = true\n"
+                    "cors_allow_origin = https://app.example.com\n"
+                    "cors_allow_methods = GET,POST,OPTIONS\n"
+                    "cors_allow_headers = Content-Type,Authorization\n"
+                    "cors_allow_credentials = true\n"
+                    "cors_max_age_seconds = 3600\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.vhost_count, 1);
+  ASSERT(cfg.vhosts[0].security_headers != NULL);
+  ASSERT_EQ(cfg.vhosts[0].security_headers->enabled, 1);
+  ASSERT_EQ(cfg.vhosts[0].security_headers->header_count, 2u);
+  ASSERT_STR_EQ(cfg.vhosts[0].security_headers->headers[0].name, "X-Frame-Options");
+  ASSERT_STR_EQ(cfg.vhosts[0].security_headers->headers[0].value, "DENY");
+  ASSERT_STR_EQ(cfg.vhosts[0].security_headers->headers[1].name, "X-Content-Type-Options");
+  ASSERT_STR_EQ(cfg.vhosts[0].security_headers->headers[1].value, "nosniff");
+
+  ASSERT(cfg.vhosts[0].cors != NULL);
+  ASSERT_EQ(cfg.vhosts[0].cors->enabled, 1);
+  ASSERT_STR_EQ(cfg.vhosts[0].cors->allow_origin, "https://app.example.com");
+  ASSERT_STR_EQ(cfg.vhosts[0].cors->allow_methods, "GET,POST,OPTIONS");
+  ASSERT_STR_EQ(cfg.vhosts[0].cors->allow_headers, "Content-Type,Authorization");
+  ASSERT_EQ(cfg.vhosts[0].cors->allow_credentials, 1);
+  ASSERT_EQ(cfg.vhosts[0].cors->max_age_seconds, 3600u);
+  ASSERT((cfg.vhosts[0].features & CFG_FEAT_CORS) != 0);
+
+  free_loaded_cfg_heap(&cfg);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_cors_wildcard_with_credentials_fails(void) {
+  const char *ini = "[vhost badcors]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8105\n"
+                    "cors = true\n"
+                    "cors_allow_origin = *\n"
+                    "cors_allow_credentials = true\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "cannot be combined") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_inherited_cors_wildcard_with_credentials_fails(void) {
+  const char *ini = "[vhost inherited_badcors]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8106\n"
+                    "cors = true\n"
+                    "cors_allow_origin = *\n"
+                    "\n"
+                    "[route api]\n"
+                    "vhost = inherited_badcors\n"
+                    "path_prefix = /api\n"
+                    "cors_allow_credentials = true\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "cannot be combined") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_index_longest_prefix_order(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8106\n"
+                    "\n"
+                    "[route api]\n"
+                    "vhost = main\n"
+                    "path_prefix = /api\n"
+                    "\n"
+                    "[route api_v2]\n"
+                    "vhost = main\n"
+                    "path_prefix = /api/v2\n"
+                    "cors = true\n"
+                    "\n"
+                    "[route root]\n"
+                    "vhost = main\n"
+                    "path_prefix = /\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.route_rule_count, 3);
+  ASSERT_EQ(cfg.vhosts[0].route_rule_count, 3u);
+
+  const struct route_policy_rule *r0 = cfg.vhosts[0].route_rules[0];
+  const struct route_policy_rule *r1 = cfg.vhosts[0].route_rules[1];
+  const struct route_policy_rule *r2 = cfg.vhosts[0].route_rules[2];
+
+  ASSERT(route_ptr_in_cfg_storage(&cfg, r0));
+  ASSERT(route_ptr_in_cfg_storage(&cfg, r1));
+  ASSERT(route_ptr_in_cfg_storage(&cfg, r2));
+
+  ASSERT_STR_EQ(r0->path_prefix, "/api/v2");
+  ASSERT_STR_EQ(r1->path_prefix, "/api");
+  ASSERT_STR_EQ(r2->path_prefix, "/");
+
+  ASSERT((cfg.vhosts[0].features & CFG_FEAT_CORS) != 0);
+
+  free_loaded_cfg_heap(&cfg);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_index_tie_uses_declaration_order(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8107\n"
+                    "\n"
+                    "[route first]\n"
+                    "vhost = main\n"
+                    "path_prefix = /foo\n"
+                    "\n"
+                    "[route second]\n"
+                    "vhost = main\n"
+                    "path_prefix = /bar\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.route_rule_count, 2);
+  ASSERT_EQ(cfg.vhosts[0].route_rule_count, 2u);
+
+  const struct route_policy_rule *r0 = cfg.vhosts[0].route_rules[0];
+  const struct route_policy_rule *r1 = cfg.vhosts[0].route_rules[1];
+
+  ASSERT(route_ptr_in_cfg_storage(&cfg, r0));
+  ASSERT(route_ptr_in_cfg_storage(&cfg, r1));
+
+  ASSERT_STR_EQ(r0->path_prefix, "/foo");
+  ASSERT_STR_EQ(r1->path_prefix, "/bar");
+
+  free_loaded_cfg_heap(&cfg);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_parse_capacity_grows_with_route_count(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8115\n"
+                    "\n"
+                    "[route r1]\n"
+                    "vhost = main\n"
+                    "path_prefix = /a\n"
+                    "\n"
+                    "[route r2]\n"
+                    "vhost = main\n"
+                    "path_prefix = /ab\n"
+                    "\n"
+                    "[route r3]\n"
+                    "vhost = main\n"
+                    "path_prefix = /abc\n"
+                    "\n"
+                    "[route r4]\n"
+                    "vhost = main\n"
+                    "path_prefix = /abcd\n"
+                    "\n"
+                    "[route r5]\n"
+                    "vhost = main\n"
+                    "path_prefix = /abcde\n"
+                    "\n"
+                    "[route r6]\n"
+                    "vhost = main\n"
+                    "path_prefix = /abcdef\n"
+                    "\n"
+                    "[route r7]\n"
+                    "vhost = main\n"
+                    "path_prefix = /abcdefg\n"
+                    "\n"
+                    "[route r8]\n"
+                    "vhost = main\n"
+                    "path_prefix = /abcdefgh\n"
+                    "\n"
+                    "[route r9]\n"
+                    "vhost = main\n"
+                    "path_prefix = /abcdefghi\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.route_rule_count, 9);
+  ASSERT_EQ(cfg.vhosts[0].route_rule_count, 9u);
+  ASSERT_EQ(cfg.vhosts[0].route_rule_cap, 9u);
+
+  for (uint16_t i = 0; i < cfg.vhosts[0].route_rule_count; ++i) {
+    ASSERT(route_ptr_in_cfg_storage(&cfg, cfg.vhosts[0].route_rules[i]));
+  }
+  ASSERT_STR_EQ(cfg.vhosts[0].route_rules[0]->path_prefix, "/abcdefghi");
+  ASSERT_STR_EQ(cfg.vhosts[0].route_rules[8]->path_prefix, "/a");
+
+  free_loaded_cfg_heap(&cfg);
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_unknown_vhost_fails(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8108\n"
+                    "\n"
+                    "[route bad]\n"
+                    "vhost = missing\n"
+                    "path_prefix = /api\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "unknown vhost") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_missing_required_fields_fail(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8109\n"
+                    "\n"
+                    "[route missing_path]\n"
+                    "vhost = main\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "missing required key 'path_prefix'") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_alloc_fail_candidate_keeps_cfg_unchanged(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8110\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  cfg.vhost_count = 7;
+  cfg.route_rule_count = 3;
+  cfg.g.present = GF_QUEUE_DEPTH;
+  cfg.g.queue_depth = 4242u;
+  struct config_t before = cfg;
+
+  g_config_ini_alloc_failpoint = CONFIG_INI_ALLOC_FAIL_CANDIDATE;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "candidate config") != NULL);
+  ASSERT_EQ(memcmp(&cfg, &before, sizeof(cfg)), 0);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_alloc_fail_parse_ctx_keeps_cfg_unchanged(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8111\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  cfg.vhost_count = 5;
+  cfg.route_rule_count = 2;
+  cfg.g.present = GF_WORKERS;
+  cfg.g.workers = 9u;
+  struct config_t before = cfg;
+
+  g_config_ini_alloc_failpoint = CONFIG_INI_ALLOC_FAIL_PARSE_CTX;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "parse context") != NULL);
+  ASSERT_EQ(memcmp(&cfg, &before, sizeof(cfg)), 0);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_alloc_fail_route_index_keeps_cfg_unchanged(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8112\n"
+                    "\n"
+                    "[route api]\n"
+                    "vhost = main\n"
+                    "path_prefix = /api\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  cfg.vhost_count = 2;
+  cfg.route_rule_count = 1;
+  cfg.g.present = GF_PRE_ACCEPTS;
+  cfg.g.pre_accepts = 77u;
+  struct config_t before = cfg;
+
+  g_config_ini_alloc_failpoint = CONFIG_INI_ALLOC_FAIL_ROUTE_INDEX;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(err[0] != '\0');
+  ASSERT_EQ(memcmp(&cfg, &before, sizeof(cfg)), 0);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_alloc_fail_route_parse_keeps_cfg_unchanged(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8113\n"
+                    "\n"
+                    "[route api]\n"
+                    "vhost = main\n"
+                    "path_prefix = /api\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  cfg.vhost_count = 4;
+  cfg.route_rule_count = 1;
+  cfg.g.present = GF_WORKERS;
+  cfg.g.workers = 5u;
+  struct config_t before = cfg;
+
+  g_config_ini_alloc_failpoint = CONFIG_INI_ALLOC_FAIL_ROUTE_PARSE;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(err[0] != '\0');
+  ASSERT_EQ(memcmp(&cfg, &before, sizeof(cfg)), 0);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_alloc_fail_route_resolved_keeps_cfg_unchanged(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8114\n"
+                    "\n"
+                    "[route api]\n"
+                    "vhost = main\n"
+                    "path_prefix = /api\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  cfg.vhost_count = 3;
+  cfg.route_rule_count = 2;
+  cfg.g.present = GF_PRE_ACCEPTS;
+  cfg.g.pre_accepts = 101u;
+  struct config_t before = cfg;
+
+  g_config_ini_alloc_failpoint = CONFIG_INI_ALLOC_FAIL_ROUTE_RESOLVED;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(err[0] != '\0');
+  ASSERT_EQ(memcmp(&cfg, &before, sizeof(cfg)), 0);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_alloc_fail_vhost_route_list_keeps_cfg_unchanged(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8116\n"
+                    "\n"
+                    "[route api]\n"
+                    "vhost = main\n"
+                    "path_prefix = /api\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  cfg.vhost_count = 6;
+  cfg.route_rule_count = 4;
+  cfg.g.present = GF_QUEUE_DEPTH;
+  cfg.g.queue_depth = 3333u;
+  struct config_t before = cfg;
+
+  g_config_ini_alloc_failpoint = CONFIG_INI_ALLOC_FAIL_VHOST_ROUTE_LIST;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "resolving route list") != NULL);
+  ASSERT_EQ(memcmp(&cfg, &before, sizeof(cfg)), 0);
 
   unlink(path);
   PASS();
@@ -1237,7 +1801,21 @@ SUITE(config_ini_greatest) {
   RUN_TEST(t_auth_realm_invalid_rejected);
   RUN_TEST(t_auth_basic_file_ignored_when_auth_disabled);
   RUN_TEST(t_auth_basic_file_load_failure_returns_error);
-  RUN_TEST(t_auth_load_failure_unwinds_prior_vhost_resources);
+  RUN_TEST(t_auth_load_failure_keeps_cfg_unchanged);
+  RUN_TEST(t_cors_and_security_headers_parsed);
+  RUN_TEST(t_cors_wildcard_with_credentials_fails);
+  RUN_TEST(t_route_inherited_cors_wildcard_with_credentials_fails);
+  RUN_TEST(t_route_index_longest_prefix_order);
+  RUN_TEST(t_route_index_tie_uses_declaration_order);
+  RUN_TEST(t_route_parse_capacity_grows_with_route_count);
+  RUN_TEST(t_route_unknown_vhost_fails);
+  RUN_TEST(t_route_missing_required_fields_fail);
+  RUN_TEST(t_alloc_fail_candidate_keeps_cfg_unchanged);
+  RUN_TEST(t_alloc_fail_parse_ctx_keeps_cfg_unchanged);
+  RUN_TEST(t_alloc_fail_route_parse_keeps_cfg_unchanged);
+  RUN_TEST(t_alloc_fail_route_resolved_keeps_cfg_unchanged);
+  RUN_TEST(t_alloc_fail_route_index_keeps_cfg_unchanged);
+  RUN_TEST(t_alloc_fail_vhost_route_list_keeps_cfg_unchanged);
 }
 
 GREATEST_MAIN_DEFS();

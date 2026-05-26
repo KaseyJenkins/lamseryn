@@ -1,7 +1,10 @@
 #include "include/config.h"
 #include "include/conn.h"
 #include "include/http_pipeline.h"
+#include "include/http_headers.h"
+#include "include/tx.h"
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include "../vendor/greatest_color.h"
 #include "../vendor/greatest.h"
@@ -33,6 +36,16 @@ static int g_static_serve_result = 0;
 static int g_static_serve_errno = 0;
 static int g_static_serve_calls = 0;
 
+static int g_tx_build_headers_calls = 0;
+static char g_tx_last_status[64];
+static char g_tx_last_extra[1024];
+
+static void reset_tx_stubs(void) {
+  g_tx_build_headers_calls = 0;
+  g_tx_last_status[0] = '\0';
+  g_tx_last_extra[0] = '\0';
+}
+
 // Stub for auth_basic_check: all test vhosts have auth_store=NULL so this
 // would return 0 in the real implementation anyway.
 int auth_basic_check(struct conn *c) {
@@ -48,6 +61,83 @@ int static_serve_try_prepare_docroot_response(struct conn *c, int docroot_fd, in
     *static_open_err = g_static_serve_errno;
   }
   return g_static_serve_result;
+}
+
+const char *http_header_find_value(const struct req_hdr_entry *hdrs,
+                                   uint8_t hdr_count,
+                                   enum http_header_id id,
+                                   uint8_t *out_len) {
+  if (out_len) {
+    *out_len = 0;
+  }
+  if (!hdrs || hdr_count == 0) {
+    return NULL;
+  }
+
+  for (uint8_t i = 0; i < hdr_count; ++i) {
+    if ((enum http_header_id)hdrs[i].id == id) {
+      if (out_len) {
+        *out_len = hdrs[i].value_len;
+      }
+      return hdrs[i].value;
+    }
+  }
+  return NULL;
+}
+
+enum tx_decision tx_begin_headers(struct tx_state_t *tx,
+                                  enum resp_kind rk,
+                                  const char *buf,
+                                  size_t len,
+                                  int keepalive,
+                                  int drain_after_headers,
+                                  struct tx_next_io *out) {
+  (void)tx;
+  (void)rk;
+  (void)buf;
+  (void)len;
+  (void)keepalive;
+  (void)drain_after_headers;
+  (void)out;
+  return TX_SEND_HEADERS;
+}
+
+int tx_build_headers(struct tx_state_t *tx,
+                     const char *status_line,
+                     const char *content_type,
+                     int emit_content_length,
+                     size_t content_len,
+                     const void *body,
+                     size_t body_send_len,
+                     int keepalive,
+                     int drain_after_headers,
+                     const char *extra_headers,
+                     const char **buf,
+                     size_t *len) {
+  (void)tx;
+  (void)content_type;
+  (void)emit_content_length;
+  (void)content_len;
+  (void)body;
+  (void)body_send_len;
+  (void)keepalive;
+  (void)drain_after_headers;
+
+  g_tx_build_headers_calls++;
+  snprintf(g_tx_last_status, sizeof(g_tx_last_status), "%s", status_line ? status_line : "");
+  snprintf(g_tx_last_extra,
+           sizeof(g_tx_last_extra),
+           "%s",
+           extra_headers ? extra_headers : "");
+
+  static const char fake[] = "H";
+  if (buf) {
+    *buf = fake;
+  }
+  if (len) {
+    *len = sizeof(fake) - 1;
+  }
+  return 0;
 }
 
 TEST t_ok_variants_have_no_fixed_response_mapping(void) {
@@ -97,6 +187,34 @@ TEST t_errors_map(void) {
   struct request_response_plan p503 = request_build_response_plan(RK_503, 0, 0, 1);
   ASSERT_EQ(p503.status_line, NULL);
 #endif
+  PASS();
+}
+
+TEST t_policy_fail_closed_response_plan_error_maps_500_close(void) {
+  struct request_response_plan in = request_build_response_plan(RK_405,
+                                                                /*keepalive=*/1,
+                                                                /*drain_after_headers=*/1,
+                                                                /*close_after_send=*/0);
+  struct request_response_plan out = request_policy_fail_closed_response_plan(in, -1);
+  ASSERT_EQ(out.kind, RK_500);
+  ASSERT_EQ(out.keepalive, 0);
+  ASSERT_EQ(out.drain_after_headers, 0);
+  ASSERT_EQ(out.close_after_send, 1);
+  ASSERT_STR_EQ(out.status_line, "500 Internal Server Error");
+  PASS();
+}
+
+TEST t_policy_fail_closed_response_plan_success_keeps_plan(void) {
+  struct request_response_plan in = request_build_response_plan(RK_404,
+                                                                /*keepalive=*/0,
+                                                                /*drain_after_headers=*/0,
+                                                                /*close_after_send=*/1);
+  struct request_response_plan out = request_policy_fail_closed_response_plan(in, 1);
+  ASSERT_EQ(out.kind, RK_404);
+  ASSERT_EQ(out.keepalive, 0);
+  ASSERT_EQ(out.drain_after_headers, 0);
+  ASSERT_EQ(out.close_after_send, 1);
+  ASSERT_STR_EQ(out.status_line, "404 Not Found");
   PASS();
 }
 
@@ -452,9 +570,384 @@ TEST t_request_dispatch_ok_static_fallback_uses_open_errno(void) {
   PASS();
 }
 
+TEST t_request_dispatch_ok_options_preflight_route_cors_enabled(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct route_policy_rule rr;
+  const struct route_policy_rule *route_rules[1];
+  struct req_hdr_entry hdrs[2];
+  struct http_ok_plan okplan;
+  char path[] = "/api/users";
+  static char origin[] = "https://client.example";
+  static char req_method[] = "POST";
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&rr, 0, sizeof(rr));
+  memset(hdrs, 0, sizeof(hdrs));
+  memset(&okplan, 0, sizeof(okplan));
+
+  c.vhost = &vh;
+  c.h1.method = HTTP_OPTIONS;
+  c.h1.method_not_allowed = 1;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  hdrs[0].id = (uint8_t)HDR_ID_ORIGIN;
+  hdrs[0].value = origin;
+  hdrs[0].value_len = (uint8_t)strlen(origin);
+  hdrs[1].id = (uint8_t)HDR_ID_ACCESS_CONTROL_REQUEST_METHOD;
+  hdrs[1].value = req_method;
+  hdrs[1].value_len = (uint8_t)strlen(req_method);
+  c.h1.req_hdrs = hdrs;
+  c.h1.req_hdr_count = 2;
+
+  snprintf(rr.path_prefix, sizeof(rr.path_prefix), "%s", "/api");
+  rr.path_prefix_len = (uint16_t)strlen(rr.path_prefix);
+  rr.cors.enabled = 1;
+  rr.cors.enabled_set = 1;
+  rr.cors.allow_origin_set = 1;
+  rr.cors.allow_methods_set = 1;
+  snprintf(rr.cors.allow_origin, sizeof(rr.cors.allow_origin), "%s", "https://app.example.com");
+  snprintf(rr.cors.allow_methods, sizeof(rr.cors.allow_methods), "%s", "GET,POST,OPTIONS");
+  route_rules[0] = &rr;
+  vh.route_rules = route_rules;
+  vh.route_rule_count = 1;
+  vh.route_rule_cap = 1;
+
+  reset_tx_stubs();
+  g_static_serve_calls = 0;
+  okplan.kind = RK_405;
+  okplan.keepalive = 0;
+  okplan.close_after_send = 1;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(d.kind, REQUEST_OK_TX_BUFFER);
+  ASSERT_EQ(g_static_serve_calls, 0);
+  ASSERT_EQ(g_tx_build_headers_calls, 1);
+  ASSERT_STR_EQ(g_tx_last_status, "204 No Content");
+  ASSERT(strstr(g_tx_last_extra, "Access-Control-Allow-Origin: https://app.example.com") != NULL);
+  ASSERT(strstr(g_tx_last_extra, "Access-Control-Allow-Methods: GET,POST,OPTIONS") != NULL);
+  ASSERT(strstr(g_tx_last_extra, "Vary: Origin") != NULL);
+  PASS();
+}
+
+TEST t_request_dispatch_ok_options_preflight_missing_hdr_falls_back_405(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct route_policy_rule rr;
+  const struct route_policy_rule *route_rules[1];
+  struct req_hdr_entry hdrs[1];
+  struct http_ok_plan okplan;
+  char path[] = "/api/users";
+  static char origin[] = "https://client.example";
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&rr, 0, sizeof(rr));
+  memset(hdrs, 0, sizeof(hdrs));
+  memset(&okplan, 0, sizeof(okplan));
+
+  c.vhost = &vh;
+  c.h1.method = HTTP_OPTIONS;
+  c.h1.method_not_allowed = 1;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  hdrs[0].id = (uint8_t)HDR_ID_ORIGIN;
+  hdrs[0].value = origin;
+  hdrs[0].value_len = (uint8_t)strlen(origin);
+  c.h1.req_hdrs = hdrs;
+  c.h1.req_hdr_count = 1;
+
+  snprintf(rr.path_prefix, sizeof(rr.path_prefix), "%s", "/api");
+  rr.path_prefix_len = (uint16_t)strlen(rr.path_prefix);
+  rr.cors.enabled = 1;
+  rr.cors.enabled_set = 1;
+  rr.cors.allow_origin_set = 1;
+  snprintf(rr.cors.allow_origin, sizeof(rr.cors.allow_origin), "%s", "*");
+  route_rules[0] = &rr;
+  vh.route_rules = route_rules;
+  vh.route_rule_count = 1;
+  vh.route_rule_cap = 1;
+
+  reset_tx_stubs();
+  okplan.kind = RK_405;
+  okplan.keepalive = 0;
+  okplan.close_after_send = 1;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(d.kind, REQUEST_OK_HEADER_RESPONSE);
+  ASSERT_EQ(d.response.kind, RK_405);
+  ASSERT_EQ(g_tx_build_headers_calls, 0);
+  PASS();
+}
+
+TEST t_request_dispatch_ok_options_no_cors_falls_back_405(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct req_hdr_entry hdrs[2];
+  struct http_ok_plan okplan;
+  char path[] = "/api/users";
+  static char origin[] = "https://client.example";
+  static char req_method[] = "POST";
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(hdrs, 0, sizeof(hdrs));
+  memset(&okplan, 0, sizeof(okplan));
+
+  c.vhost = &vh;
+  c.h1.method = HTTP_OPTIONS;
+  c.h1.method_not_allowed = 1;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  hdrs[0].id = (uint8_t)HDR_ID_ORIGIN;
+  hdrs[0].value = origin;
+  hdrs[0].value_len = (uint8_t)strlen(origin);
+  hdrs[1].id = (uint8_t)HDR_ID_ACCESS_CONTROL_REQUEST_METHOD;
+  hdrs[1].value = req_method;
+  hdrs[1].value_len = (uint8_t)strlen(req_method);
+  c.h1.req_hdrs = hdrs;
+  c.h1.req_hdr_count = 2;
+
+  reset_tx_stubs();
+  okplan.kind = RK_405;
+  okplan.keepalive = 0;
+  okplan.close_after_send = 1;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(d.kind, REQUEST_OK_HEADER_RESPONSE);
+  ASSERT_EQ(d.response.kind, RK_405);
+  ASSERT_EQ(g_tx_build_headers_calls, 0);
+  PASS();
+}
+
+TEST t_request_policy_extra_headers_route_override_and_dedup(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct route_policy_rule rr;
+  struct security_headers_policy vh_sec;
+  struct cors_policy vh_cors;
+  const struct route_policy_rule *route_rules[1];
+  char path[] = "/api/items";
+  static char custom_dup[] = "X-Frame-Options: FROM-CUSTOM\r\n";
+  static char custom_ok[] = "X-Test-Custom: keep\r\n";
+  char extra[1024];
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&rr, 0, sizeof(rr));
+  memset(&vh_sec, 0, sizeof(vh_sec));
+  memset(&vh_cors, 0, sizeof(vh_cors));
+  memset(route_rules, 0, sizeof(route_rules));
+  memset(extra, 0, sizeof(extra));
+
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  vh.security_headers = &vh_sec;
+  vh.security_headers->enabled = 1;
+  vh.security_headers->enabled_set = 1;
+  snprintf(vh.security_headers->headers[0].name,
+           sizeof(vh.security_headers->headers[0].name),
+           "%s",
+           "X-Frame-Options");
+  snprintf(vh.security_headers->headers[0].value,
+           sizeof(vh.security_headers->headers[0].value),
+           "%s",
+           "DENY");
+  vh.security_headers->header_count = 1;
+
+  vh.cors = &vh_cors;
+  vh.cors->enabled = 1;
+  vh.cors->enabled_set = 1;
+  vh.cors->allow_origin_set = 1;
+  snprintf(vh.cors->allow_origin, sizeof(vh.cors->allow_origin), "%s", "*");
+
+  vh.custom_headers[0] = custom_dup;
+  vh.custom_headers[1] = custom_ok;
+  vh.custom_headers_count = 2;
+
+  snprintf(rr.path_prefix, sizeof(rr.path_prefix), "%s", "/api");
+  rr.path_prefix_len = (uint16_t)strlen(rr.path_prefix);
+  rr.security_headers.enabled = 1;
+  rr.security_headers.enabled_set = 1;
+  snprintf(rr.security_headers.headers[0].name,
+           sizeof(rr.security_headers.headers[0].name),
+           "%s",
+           "X-Frame-Options");
+  snprintf(rr.security_headers.headers[0].value,
+           sizeof(rr.security_headers.headers[0].value),
+           "%s",
+           "SAMEORIGIN");
+  rr.security_headers.header_count = 1;
+  rr.cors.enabled = 1;
+  rr.cors.enabled_set = 1;
+  rr.cors.allow_origin_set = 1;
+  snprintf(rr.cors.allow_origin, sizeof(rr.cors.allow_origin), "%s", "https://route.example");
+
+  route_rules[0] = &rr;
+  vh.route_rules = route_rules;
+  vh.route_rule_count = 1;
+  vh.route_rule_cap = 1;
+
+  int rc = request_build_policy_extra_headers(&c, RK_405, extra);
+  ASSERT_EQ(rc, 1);
+  ASSERT(strstr(extra, "X-Frame-Options: SAMEORIGIN\r\n") != NULL);
+  ASSERT(strstr(extra, "X-Frame-Options: FROM-CUSTOM\r\n") == NULL);
+  ASSERT(strstr(extra, "X-Test-Custom: keep\r\n") != NULL);
+  ASSERT(strstr(extra, "Access-Control-Allow-Origin: https://route.example\r\n") != NULL);
+  ASSERT(strstr(extra, "Vary: Origin\r\n") != NULL);
+  PASS();
+}
+
+TEST t_request_policy_extra_headers_unsupported_kind_returns_none(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct security_headers_policy vh_sec;
+  char extra[1024];
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&vh_sec, 0, sizeof(vh_sec));
+  memset(extra, 0, sizeof(extra));
+
+  c.vhost = &vh;
+  vh.security_headers = &vh_sec;
+  vh.security_headers->enabled = 1;
+  vh.security_headers->enabled_set = 1;
+  snprintf(vh.security_headers->headers[0].name,
+           sizeof(vh.security_headers->headers[0].name),
+           "%s",
+           "X-Frame-Options");
+  snprintf(vh.security_headers->headers[0].value,
+           sizeof(vh.security_headers->headers[0].value),
+           "%s",
+           "DENY");
+  vh.security_headers->header_count = 1;
+
+  int rc = request_build_policy_extra_headers(&c, RK_400, extra);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(extra[0], '\0');
+  PASS();
+}
+
+TEST t_request_policy_extra_headers_route_disables_inherited_security(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct route_policy_rule rr;
+  struct security_headers_policy vh_sec;
+  const struct route_policy_rule *route_rules[1];
+  char path[] = "/api/items";
+  char extra[1024];
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&rr, 0, sizeof(rr));
+  memset(&vh_sec, 0, sizeof(vh_sec));
+  memset(route_rules, 0, sizeof(route_rules));
+  memset(extra, 0, sizeof(extra));
+
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  vh.security_headers = &vh_sec;
+  vh.security_headers->enabled = 1;
+  vh.security_headers->enabled_set = 1;
+  snprintf(vh.security_headers->headers[0].name,
+           sizeof(vh.security_headers->headers[0].name),
+           "%s",
+           "X-Frame-Options");
+  snprintf(vh.security_headers->headers[0].value,
+           sizeof(vh.security_headers->headers[0].value),
+           "%s",
+           "DENY");
+  vh.security_headers->header_count = 1;
+
+  snprintf(rr.path_prefix, sizeof(rr.path_prefix), "%s", "/api");
+  rr.path_prefix_len = (uint16_t)strlen(rr.path_prefix);
+  rr.inherit_security_headers = 0;
+  rr.inherit_security_headers_set = 1;
+  rr.security_headers.enabled = 0;
+  rr.security_headers.enabled_set = 1;
+  route_rules[0] = &rr;
+  vh.route_rules = route_rules;
+  vh.route_rule_count = 1;
+  vh.route_rule_cap = 1;
+
+  int rc = request_build_policy_extra_headers(&c, RK_404, extra);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(extra[0], '\0');
+  PASS();
+}
+
+TEST t_request_policy_extra_headers_overflow_returns_error(void) {
+  struct conn c;
+  struct vhost_t vh;
+  char extra[1024];
+  char value[280];
+  char h0[340];
+  char h1[340];
+  char h2[340];
+  char h3[340];
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(extra, 0, sizeof(extra));
+  memset(value, 'A', sizeof(value) - 1);
+  value[sizeof(value) - 1] = '\0';
+
+  snprintf(h0, sizeof(h0), "X-Long-0: %s\r\n", value);
+  snprintf(h1, sizeof(h1), "X-Long-1: %s\r\n", value);
+  snprintf(h2, sizeof(h2), "X-Long-2: %s\r\n", value);
+  snprintf(h3, sizeof(h3), "X-Long-3: %s\r\n", value);
+
+  c.vhost = &vh;
+  vh.custom_headers[0] = h0;
+  vh.custom_headers[1] = h1;
+  vh.custom_headers[2] = h2;
+  vh.custom_headers[3] = h3;
+  vh.custom_headers_count = 4;
+
+  int rc = request_build_policy_extra_headers(&c, RK_405, extra);
+  ASSERT_EQ(rc, -1);
+  ASSERT_EQ(extra[0], '\0');
+  PASS();
+}
+
+TEST t_request_policy_extra_headers_null_route_list_is_safe(void) {
+  struct conn c;
+  struct vhost_t vh;
+  char path[] = "/api/items";
+  char extra[1024];
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(extra, 0, sizeof(extra));
+
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  // Defensive coverage: route count may be set before pointer storage is allocated.
+  vh.route_rule_count = 1;
+  vh.route_rules = NULL;
+
+  int rc = request_build_policy_extra_headers(&c, RK_405, extra);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(extra[0], '\0');
+  PASS();
+}
+
 SUITE(s_request_handlers) {
   RUN_TEST(t_ok_variants_have_no_fixed_response_mapping);
   RUN_TEST(t_errors_map);
+  RUN_TEST(t_policy_fail_closed_response_plan_error_maps_500_close);
+  RUN_TEST(t_policy_fail_closed_response_plan_success_keeps_plan);
   RUN_TEST(t_route_plan_static_eligible);
   RUN_TEST(t_route_plan_static_ineligible);
   RUN_TEST(t_route_plan_method_not_allowed_override);
@@ -473,6 +966,14 @@ SUITE(s_request_handlers) {
   RUN_TEST(t_request_dispatch_ok_non_static_defaults_404);
   RUN_TEST(t_request_dispatch_ok_static_success_returns_tx_buffer);
   RUN_TEST(t_request_dispatch_ok_static_fallback_uses_open_errno);
+  RUN_TEST(t_request_dispatch_ok_options_preflight_route_cors_enabled);
+  RUN_TEST(t_request_dispatch_ok_options_preflight_missing_hdr_falls_back_405);
+  RUN_TEST(t_request_dispatch_ok_options_no_cors_falls_back_405);
+  RUN_TEST(t_request_policy_extra_headers_route_override_and_dedup);
+  RUN_TEST(t_request_policy_extra_headers_unsupported_kind_returns_none);
+  RUN_TEST(t_request_policy_extra_headers_route_disables_inherited_security);
+  RUN_TEST(t_request_policy_extra_headers_overflow_returns_error);
+  RUN_TEST(t_request_policy_extra_headers_null_route_list_is_safe);
 }
 
 GREATEST_MAIN_DEFS();

@@ -426,7 +426,17 @@ static void access_log_notify_writer(void) {
 static void *access_log_writer_thread(void *arg) {
   (void)arg;
 
-  char batch_buf[ACCESS_LOG_BATCH_MAX_BYTES];
+  char *batch_buf = malloc(ACCESS_LOG_BATCH_MAX_BYTES);
+  char *line_buf = malloc(ACCESS_LOG_LINE_MAX);
+  if (!batch_buf || !line_buf) {
+    LOGE(LOGC_CORE,
+         "access log writer scratch alloc failed: batch=%p line=%p",
+         (void *)batch_buf,
+         (void *)line_buf);
+    free(batch_buf);
+    free(line_buf);
+    return NULL;
+  }
 
   for (;;) {
     int did_work = 0;
@@ -443,8 +453,7 @@ static void *access_log_writer_thread(void *arg) {
 
         while (batch_tail != head && batch_lines < ACCESS_LOG_BATCH_MAX_LINES) {
           struct access_log_qentry *item = &q->entries[batch_tail];
-          char line_buf[ACCESS_LOG_LINE_MAX];
-          size_t line_len = access_log_format_qentry_line(line_buf, sizeof(line_buf), item);
+          size_t line_len = access_log_format_qentry_line(line_buf, ACCESS_LOG_LINE_MAX, item);
           if (line_len == 0 || line_len > ACCESS_LOG_LINE_MAX) {
             (void)__sync_add_and_fetch(&g_access_log_dropped, 1ull);
             LOGW_RL(LOGC_CORE,
@@ -535,6 +544,8 @@ static void *access_log_writer_thread(void *arg) {
     }
   }
 
+  free(batch_buf);
+  free(line_buf);
   return NULL;
 }
 

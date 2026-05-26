@@ -241,6 +241,31 @@ run_client() {
   ITEST_SERVER_PID="${server_pid:-}" "$CLIENT_BIN" "$mode" -H "$HOST" -P "$PORT" -t "$TIMEOUT_MS" "${extra[@]}" "$@"
 }
 
+wait_for_min_lines() {
+  local file=$1
+  local min_lines=$2
+  local tries=${3:-100}
+  local sleep_s=${4:-0.02}
+  local lines=0
+
+  for _ in $(seq 1 "$tries"); do
+    if [[ -f "$file" ]]; then
+      lines=$(wc -l <"$file" | tr -d '[:space:]')
+      if [[ "$lines" -ge "$min_lines" ]]; then
+        echo "$lines"
+        return 0
+      fi
+    fi
+    sleep "$sleep_s"
+  done
+
+  if [[ -f "$file" ]]; then
+    lines=$(wc -l <"$file" | tr -d '[:space:]')
+  fi
+  echo "$lines"
+  return 1
+}
+
 start_server ""
 
 echo "[itest] running static index (DOCROOT=$DOCROOT)" >&2
@@ -339,15 +364,12 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
     run_client static-index --nodelay
   done
 
-  # Allow the worker to flush line writes before assertions.
-  sleep 0.1
-
   if [[ ! -f "$ACCESS_LOG_FILE" ]]; then
     echo "[itest] access log file missing: $ACCESS_LOG_FILE" >&2
     exit 1
   fi
 
-  log_lines=$(wc -l <"$ACCESS_LOG_FILE" | tr -d '[:space:]')
+  log_lines=$(wait_for_min_lines "$ACCESS_LOG_FILE" 64 150 0.02 || true)
   if [[ "$log_lines" -lt "64" ]]; then
     echo "[itest] expected at least 64 access log lines after threshold flush, got $log_lines" >&2
     echo "[itest] access log contents:" >&2
@@ -519,10 +541,8 @@ if [[ "$ENABLE_ACCESS_LOG_ITESTS" == "1" ]]; then
   for _ in $(seq 1 70); do
     run_client static-index --nodelay
   done
-  sleep 0.1
-
+  new_after_post=$(wait_for_min_lines "$ACCESS_LOG_FILE" 64 150 0.02 || true)
   old_after_post=$(wc -l <"$ACCESS_LOG_ROTATED_FILE" | tr -d '[:space:]')
-  new_after_post=$(wc -l <"$ACCESS_LOG_FILE" | tr -d '[:space:]')
 
   if [[ "$new_after_post" -lt "64" ]]; then
     echo "[itest] expected at least 64 post-reopen lines in new access log, got $new_after_post" >&2

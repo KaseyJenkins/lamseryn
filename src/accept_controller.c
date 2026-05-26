@@ -158,8 +158,13 @@ int accept_arm_startup(struct worker_ctx *w) {
       mark_post(w);
     }
 #else
+    unsigned pre_accepts = CONFIG_PRE_ACCEPTS;
+    if (w->cfg.config && (w->cfg.config->g.present & GF_PRE_ACCEPTS)) {
+      pre_accepts = w->cfg.config->g.pre_accepts;
+    }
+
     int posted = 0;
-    for (int k = 0; k < PRE_ACCEPTS; ++k) {
+    for (unsigned k = 0; k < pre_accepts; ++k) {
       struct io_uring_sqe *sqe1 = get_sqe_batching(w);
       if (!sqe1) {
         break;
@@ -265,7 +270,7 @@ void accept_handle_cqe(struct worker_ctx *w, struct op_ctx *opacc, struct io_uri
   int err = -cfd;
   CTR_INC_OPS(w, cnt_accept_err);
   if (err == EAGAIN) {
-      CTR_INC_DEV(w, cnt_accept_eagain);
+    CTR_INC_DEV(w, cnt_accept_eagain);
   } else if (err == EMFILE) {
     CTR_INC_OPS(w, cnt_accept_emfile);
   } else if (err == ENFILE) {
@@ -280,10 +285,18 @@ void accept_handle_cqe(struct worker_ctx *w, struct op_ctx *opacc, struct io_uri
   }
 
   if (err == EMFILE || err == ENFILE) {
-    // Pause, arm backoff, then stage cancel-all for accepts.
-    accept_mark_paused(w);
-    (void)accept_arm_backoff_timer(w);
-    (void)accept_maybe_stage_cancel_all(w);
+    // Pause only after backoff is armed; otherwise keep normal rearm behavior
+    // to avoid getting stuck paused when SQEs are temporarily unavailable.
+    if (accept_arm_backoff_timer(w)) {
+      accept_mark_paused(w);
+      (void)accept_maybe_stage_cancel_all(w);
+    } else if (accept_can_rearm(w) && (!w->accept_multishot || !more)) {
+      // Fallback rearm is non-urgent to avoid tight accept/error retry churn
+      // while the process is already under FD-pressure.
+      if (accept_post_one(w, lfd, opacc)) {
+        maybe_flush(w, /*urgent=*/0);
+      }
+    }
   } else {
     // Normal rearm on error (batched, urgent for single-shot mode).
     if (err == ECANCELED && w->accept_paused) {
@@ -295,6 +308,17 @@ void accept_handle_cqe(struct worker_ctx *w, struct op_ctx *opacc, struct io_uri
 }
 
 void accept_handle_backoff(struct worker_ctx *w) {
+  if (!w) {
+    return;
+  }
+
+  // A stale backoff CQE can arrive after drain has started; do not resume or
+  // rearm accepts in that state.
+  if (w->is_draining) {
+    w->accept_backoff_armed = 0;
+    return;
+  }
+
   accept_resume_from_backoff(w);
 
   for (int i = 0; i < w->num_listeners; ++i) {
@@ -311,6 +335,9 @@ void accept_enter_drain(struct worker_ctx *w) {
   if (!w) {
     return;
   }
+
+  // Make drain visible to accept handlers immediately in the current CQE batch.
+  w->is_draining = 1;
 
   // Stop new accept rearms immediately.
   accept_mark_paused(w);

@@ -3,8 +3,13 @@
 #include "include/request_handlers.h"
 #include "include/http_pipeline.h"
 #include "include/static_serve_utils.h"
+#include "include/http_headers.h"
+#include "include/policy_headers_shared.h"
 #include "include/itest_echo.h"
 #include "include/auth.h"
+#include "include/tx.h"
+#include <stdarg.h>
+#include <stdio.h>
 #include <errno.h>
 
 // Response buffers are provided by the server translation unit.
@@ -32,6 +37,198 @@ extern const size_t RESP_503_len;
 #endif
 
 struct request_response_plan request_build_static_fallback_plan(int open_err);
+
+static int request_hdr_appendf(char *buf, size_t cap, size_t *off, const char *fmt, ...) {
+  if (!buf || !off || !fmt || *off >= cap) {
+    return -1;
+  }
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf + *off, cap - *off, fmt, ap);
+  va_end(ap);
+  if (n <= 0 || (size_t)n >= (cap - *off)) {
+    return -1;
+  }
+  *off += (size_t)n;
+  return 0;
+}
+
+static int request_response_kind_supports_policy(enum resp_kind kind) {
+  return (kind == RK_403 || kind == RK_404 || kind == RK_405) ? 1 : 0;
+}
+
+int request_build_policy_extra_headers(const struct conn *c,
+                                       enum resp_kind kind,
+                                       char out[1024]) {
+  if (!out) {
+    return -1;
+  }
+  out[0] = '\0';
+
+  if (!c || !c->vhost || !request_response_kind_supports_policy(kind)) {
+    return 0;
+  }
+
+  struct policy_shared_header_ctx ctx;
+  policy_shared_collect_headers(c, c->vhost, &ctx);
+  if (ctx.overflow) {
+    return -1;
+  }
+  if (ctx.count == 0) {
+    return 0;
+  }
+
+  size_t off = 0;
+  for (unsigned i = 0; i < ctx.count; ++i) {
+    if (!ctx.lines[i] || !ctx.lines[i][0]) {
+      continue;
+    }
+    if (request_hdr_appendf(out, 1024, &off, "%s", ctx.lines[i]) != 0) {
+      out[0] = '\0';
+      return -1;
+    }
+  }
+  return (off > 0) ? 1 : 0;
+}
+
+struct request_response_plan request_policy_fail_closed_response_plan(
+  struct request_response_plan plan,
+  int policy_extra_headers_rc) {
+  if (policy_extra_headers_rc < 0) {
+    return request_build_response_plan(RK_500,
+                                       /*keepalive=*/0,
+                                       /*drain_after_headers=*/0,
+                                       /*close_after_send=*/1);
+  }
+  return plan;
+}
+
+static int request_build_cors_preflight_headers(const struct cors_policy *cors,
+                                                char out[1024]) {
+  if (!cors || !out || !cors->enabled || !cors->allow_origin[0]) {
+    return -1;
+  }
+
+  size_t off = 0;
+  out[0] = '\0';
+
+  if (request_hdr_appendf(out,
+                          1024,
+                          &off,
+                          "Access-Control-Allow-Origin: %s\r\n",
+                          cors->allow_origin)
+      != 0) {
+    return -1;
+  }
+  if (strcmp(cors->allow_origin, "*") != 0) {
+    if (request_hdr_appendf(out, 1024, &off, "Vary: Origin\r\n") != 0) {
+      return -1;
+    }
+  }
+  if (cors->allow_methods[0]) {
+    if (request_hdr_appendf(out,
+                            1024,
+                            &off,
+                            "Access-Control-Allow-Methods: %s\r\n",
+                            cors->allow_methods)
+        != 0) {
+      return -1;
+    }
+  }
+  if (cors->allow_headers[0]) {
+    if (request_hdr_appendf(out,
+                            1024,
+                            &off,
+                            "Access-Control-Allow-Headers: %s\r\n",
+                            cors->allow_headers)
+        != 0) {
+      return -1;
+    }
+  }
+  if (cors->allow_credentials) {
+    if (request_hdr_appendf(out,
+                            1024,
+                            &off,
+                            "Access-Control-Allow-Credentials: true\r\n")
+        != 0) {
+      return -1;
+    }
+  }
+  if (cors->max_age_seconds_set && cors->max_age_seconds > 0) {
+    if (request_hdr_appendf(out,
+                            1024,
+                            &off,
+                            "Access-Control-Max-Age: %u\r\n",
+                            cors->max_age_seconds)
+        != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+static int request_try_cors_preflight(struct conn *c) {
+  if (!c || c->h1.method != HTTP_OPTIONS) {
+    return 0;
+  }
+
+  const struct vhost_t *vh = c->vhost;
+  if (!vh) {
+    return 0;
+  }
+
+  struct cors_policy cors;
+  policy_shared_resolve_effective_cors(c, vh, &cors);
+  if (!cors.enabled) {
+    return 0;
+  }
+
+  uint8_t origin_len = 0;
+  const char *origin =
+    http_header_find_value(c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_ORIGIN, &origin_len);
+  uint8_t req_method_len = 0;
+  const char *req_method =
+    http_header_find_value(c->h1.req_hdrs,
+                           c->h1.req_hdr_count,
+                           HDR_ID_ACCESS_CONTROL_REQUEST_METHOD,
+                           &req_method_len);
+  if (!origin || origin_len == 0 || !req_method || req_method_len == 0) {
+    return 0;
+  }
+
+  char extra_headers[1024];
+  if (request_build_cors_preflight_headers(&cors, extra_headers) != 0) {
+    return -1;
+  }
+
+  const char *buf = NULL;
+  size_t len = 0;
+  if (tx_build_headers(&c->tx,
+                       "204 No Content",
+                       /*content_type=*/NULL,
+                       /*emit_content_length=*/1,
+                       /*content_len=*/0,
+                       /*body=*/NULL,
+                       /*body_send_len=*/0,
+                       /*keepalive=*/0,
+                       /*drain_after_headers=*/0,
+                       extra_headers,
+                       &buf,
+                       &len)
+      != 0) {
+    return -1;
+  }
+
+  struct tx_next_io out = {0};
+  (void)tx_begin_headers(&c->tx,
+                         RK_OK_CLOSE,
+                         buf,
+                         len,
+                         /*keepalive=*/0,
+                         /*drain_after_headers=*/0,
+                         &out);
+  return 1;
+}
 
 static const char *request_response_status_line(enum resp_kind kind) {
   switch (kind) {
@@ -247,6 +444,17 @@ struct request_ok_dispatch request_dispatch_ok(struct conn *c,
     return result;
   }
 #endif
+
+  int preflight = request_try_cors_preflight(c);
+  if (preflight > 0) {
+    result.kind = REQUEST_OK_TX_BUFFER;
+    return result;
+  }
+  if (preflight < 0) {
+    result.kind = REQUEST_OK_HEADER_RESPONSE;
+    result.response = request_build_response_plan(RK_500, 0, 0, 1);
+    return result;
+  }
 
   struct request_route_plan route_plan = request_build_route_plan(c);
   int static_open_err = 0;

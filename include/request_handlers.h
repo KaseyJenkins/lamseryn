@@ -75,6 +75,18 @@ struct request_static_outcome request_build_static_outcome(
 struct request_static_serve_plan request_build_static_serve_plan(const struct conn *c,
                                                                  size_t file_size);
 
+// Build policy extra headers (security/cors/custom) for selected canned responses.
+// Returns 1 when headers were produced, 0 when not applicable/empty, and -1 on error.
+int request_build_policy_extra_headers(const struct conn *c,
+                                       enum resp_kind kind,
+                                       char out[1024]);
+
+// Apply fail-closed semantics when policy header assembly fails.
+// Returns the input plan unchanged when policy_extra_headers_rc >= 0.
+struct request_response_plan request_policy_fail_closed_response_plan(
+  struct request_response_plan plan,
+  int policy_extra_headers_rc);
+
 // Build terminal response selection for method-not-allowed, static fallback,
 // and default OK response handling.
 struct request_route_apply_plan request_build_route_apply_plan(

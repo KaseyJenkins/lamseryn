@@ -15,6 +15,9 @@ TEST t_lookup_known_headers_lower(void) {
   ASSERT_EQ(http_header_lookup_lower("if-modified-since", 17, &id), 0);
   ASSERT_EQ(id, HDR_ID_IF_MODIFIED_SINCE);
 
+  ASSERT_EQ(http_header_lookup_lower("origin", 6, &id), 0);
+  ASSERT_EQ(id, HDR_ID_ORIGIN);
+
   PASS();
 }
 
@@ -58,6 +61,14 @@ TEST t_store_mask_auth_features(void) {
   PASS();
 }
 
+TEST t_store_mask_cors_features(void) {
+  uint64_t m = http_headers_store_mask(CFG_FEAT_STATIC | CFG_FEAT_CORS);
+  ASSERT((m & http_header_bit(HDR_ID_ORIGIN)) != 0);
+  ASSERT((m & http_header_bit(HDR_ID_ACCESS_CONTROL_REQUEST_METHOD)) != 0);
+  ASSERT((m & http_header_bit(HDR_ID_ACCESS_CONTROL_REQUEST_HEADERS)) != 0);
+  PASS();
+}
+
 SUITE(s_http_headers) {
   RUN_TEST(t_lookup_known_headers_lower);
   RUN_TEST(t_lookup_unknown_header);
@@ -66,6 +77,7 @@ SUITE(s_http_headers) {
   RUN_TEST(t_store_mask_conditional_features);
   RUN_TEST(t_store_mask_compression_features);
   RUN_TEST(t_store_mask_auth_features);
+  RUN_TEST(t_store_mask_cors_features);
 }
 
 GREATEST_MAIN_DEFS();

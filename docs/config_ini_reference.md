@@ -1,6 +1,6 @@
 # INI Configuration Reference
 
-Last updated: 2026-05-03
+Last updated: 2026-05-18
 
 This document is the authoritative reference for `server.ini` keys accepted by Lamseryn.
 
@@ -10,7 +10,8 @@ This document is the authoritative reference for `server.ini` keys accepted by L
 - If `SERVER_CONFIG` is unset/empty, the server loads `server.ini` from repo root.
 - At least one `[vhost ...]` section must exist.
 - Maximum vhosts: `32`.
-- Vhost section names must be short enaough for parser and internal buffers.
+- Maximum route rules: `256`.
+- Vhost/route section names must be short enough for parser and internal buffers.
 
 Accepted vhost section forms:
 
@@ -18,6 +19,13 @@ Accepted vhost section forms:
 - `[vhost:default]`
 - `[vhost.default]`
 - `[vhost]` (name defaults to `default`)
+
+Accepted route section forms:
+
+- `[route api]`
+- `[route:api]`
+- `[route.api]`
+- `[route]` (name defaults to `default`)
 
 ## Value Parsing Rules
 
@@ -35,6 +43,7 @@ Unknown keys:
 
 - unknown `[globals]` keys are ignored.
 - unknown `[vhost ...]` keys log a warning and are ignored.
+- unknown `[route ...]` keys log a warning and are ignored.
 
 Invalid values:
 
@@ -106,6 +115,14 @@ Each vhost should declare bind/port/docroot and feature toggles.
 | `compression_dynamic_max_bytes` | u32 | `1048576` (1 MiB) | files larger than this threshold are served uncompressed (sendfile path); prevents unbounded memory use |
 | `compression_dynamic_effort` | u32 | `1` | compression effort `1`–`9` applied to all codecs: for gzip maps to zlib level 1–9; for brotli maps to brotli quality 1–9; `1` is fastest; `9` is smallest output |
 | `header_set` | string (repeatable) | none | emitted verbatim as a response header on all static responses (`200`, `206`, `HEAD`, `304`); value must be a valid `Header-Name: value` line; up to 16 per vhost; max 1024 bytes per entry; total emitted bytes across all entries must not exceed 1536 bytes (excess entries are warned and ignored at startup) |
+| `security_headers` | bool | false | enables typed security-header policy at vhost level |
+| `security_header_set` | string (repeatable) | none | typed security-header entries (`Header-Name: value`); up to 16 per vhost; header name max 63 bytes, value max 255 bytes |
+| `cors` | bool | false | enables CORS policy for the vhost |
+| `cors_allow_origin` | string | empty | CORS allow-origin value (max 255 bytes) |
+| `cors_allow_methods` | string | empty | CORS allow-methods value (max 127 bytes) |
+| `cors_allow_headers` | string | empty | CORS allow-headers value (max 255 bytes) |
+| `cors_allow_credentials` | bool | false | emits `Access-Control-Allow-Credentials: true` when enabled |
+| `cors_max_age_seconds` | u32 | unset | emits `Access-Control-Max-Age` for preflight responses when set and > 0 |
 | `index` | string | `index.html` | filename served when a request targets a directory (root `/` or trailing-slash path); must be a plain filename (no `/`, `.`, or `..`); max 63 bytes |
 | `auth` | bool | false | enables auth-related header capture; required for `auth_basic_file` enforcement |
 | `auth_basic_file` | string | empty | path to htpasswd-format credentials file; if set with `auth = true`, all requests to the vhost require valid HTTP Basic credentials; unreadable files or files with zero usable entries fail config load |
@@ -124,10 +141,58 @@ Feature-toggle reality:
 - `static` affects serving path.
 - `range`, `conditional`, and `compression` drive both header capture and static-serving behavior.
 - `compression_dynamic` requires `compression = true`; has no effect if `compression` is disabled.
+- `security_header_set` entries are part of typed policy and can be overridden per route.
+- `cors` controls effective CORS enablement; `cors_*` fields provide parameters used when CORS is enabled.
+- CORS safety rule: `cors_allow_origin = *` cannot be combined with `cors_allow_credentials = true`.
 - `auth` by itself only enables header capture; requests become protected when `auth_basic_file` is also set.
 - `auth_basic_file` without `auth = true` logs a warning and is ignored.
 - `auth_realm` is optional; the runtime default challenge realm is `Restricted`.
 - See `docs/http_capability_matrix.md` for implemented vs planned semantics.
+
+## Section: `[route <name>]`
+
+Route sections are additive policy overrides attached to a target vhost.
+The section name is only an identifier; matching is driven by `vhost` and
+`path_prefix`.
+
+| Key | Type | Default if absent | Notes |
+|---|---|---|---|
+| `vhost` | string | required | target vhost name; validated after full parse |
+| `path_prefix` | string | required | route match prefix; must start with `/`; max 255 bytes |
+| `inherit_security_headers` | bool | true | when false, disables inheritance of vhost typed security headers |
+| `security_headers` | bool | inherit behavior | explicit route toggle for typed security headers |
+| `security_header_set` | string (repeatable) | none | route-level typed security-header entries (`Header-Name: value`); up to 16 entries; name max 63 bytes, value max 255 bytes |
+| `cors` | bool | inherit from vhost | explicit route CORS enable/disable override |
+| `cors_allow_origin` | string | inherit from vhost | max 255 bytes |
+| `cors_allow_methods` | string | inherit from vhost | max 127 bytes |
+| `cors_allow_headers` | string | inherit from vhost | max 255 bytes |
+| `cors_allow_credentials` | bool | inherit from vhost | route CORS credentials override |
+| `cors_max_age_seconds` | u32 | inherit from vhost | route preflight max-age override |
+
+Route section behavior:
+
+- Required keys are `vhost` and `path_prefix`; missing or invalid required keys fail config load.
+- Route sections may appear before their referenced vhost sections.
+- Unknown route keys log warnings and are ignored.
+
+## Route Matching and Precedence
+
+Route resolution rules:
+
+1. Match against normalized absolute request path.
+2. Longest-prefix match wins.
+3. Prefixes are segment-aware: `/api` matches `/api` and `/api/users`, but not `/apiary`.
+4. Prefix-length ties resolve by declaration order (earlier wins) and log a startup warning.
+
+Policy precedence is:
+
+`route > vhost > built-in default`
+
+Current runtime application scope:
+
+- Typed security/CORS policy is applied on static-serving responses.
+- CORS preflight (`OPTIONS`) is supported when effective CORS is enabled and required preflight request headers are present.
+- If CORS is not effectively enabled for a route, method handling falls back to existing behavior.
 
 ## TLS Inheritance and Validation
 

@@ -85,6 +85,16 @@ ifeq ($(SANITIZE),asan)
 	SAN_LDFLAGS += -fsanitize=address
 endif
 
+STACK_GUARD ?= 0
+STACK_GUARD_FRAME_WARN ?= 65536
+STACK_GUARD_USAGE_WARN ?= 65536
+STACK_GUARD_CFLAGS :=
+ifeq ($(STACK_GUARD),1)
+STACK_GUARD_CFLAGS += -Wframe-larger-than=$(STACK_GUARD_FRAME_WARN) \
+			      -Wstack-usage=$(STACK_GUARD_USAGE_WARN) \
+			      -fstack-usage
+endif
+
 # Base CFLAGS used everywhere
 BASE_CFLAGS := -O2 -g -Wall -Wextra -Wvla -pipe -fno-plt -fno-omit-frame-pointer \
 			   -I"include" -I"." \
@@ -182,6 +192,7 @@ BUILD_CONFIG_STAMP := $(BUILD)/.build_config
 FORCE:
 
 APP_CFLAGS := $(BASE_CFLAGS) -std=$(CSTD) -Wshadow -Werror $(SAN_CFLAGS) \
+			  $(STACK_GUARD_CFLAGS) \
               -DLOG_COMPILE_LEVEL=$(LOG_LEVEL_CEILING) \
               -DINSTRUMENTATION_LEVEL=$(INSTRUMENTATION_LEVEL) \
 			  -DRING_OPS_INLINE=$(RING_OPS_INLINE) \

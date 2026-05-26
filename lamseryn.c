@@ -269,6 +269,46 @@ static enum wake_pipe_mode parse_wake_pipe_mode(const struct config_t *cfg) {
   return WAKE_PIPE_SHARED;
 }
 
+static void cleanup_loaded_config(struct config_t *config) {
+  if (!config) {
+    return;
+  }
+
+  for (int i = 0; i < config->vhost_count; ++i) {
+    if (config->vhosts[i].docroot_fd >= 0) {
+      close(config->vhosts[i].docroot_fd);
+      config->vhosts[i].docroot_fd = -1;
+    }
+    for (unsigned h = 0; h < config->vhosts[i].custom_headers_count; h++) {
+      free(config->vhosts[i].custom_headers[h]);
+      config->vhosts[i].custom_headers[h] = NULL;
+    }
+    config->vhosts[i].custom_headers_count = 0;
+    auth_store_free(config->vhosts[i].auth_store);
+    config->vhosts[i].auth_store = NULL;
+
+    free(config->vhosts[i].route_rules);
+    config->vhosts[i].route_rules = NULL;
+    config->vhosts[i].route_rule_count = 0;
+    config->vhosts[i].route_rule_cap = 0;
+
+    free(config->vhosts[i].security_headers);
+    config->vhosts[i].security_headers = NULL;
+
+    free(config->vhosts[i].cors);
+    config->vhosts[i].cors = NULL;
+
+    if (config->vhosts[i].tls_ctx_handle) {
+      tls_ctx_free((struct tls_ctx *)config->vhosts[i].tls_ctx_handle);
+      config->vhosts[i].tls_ctx_handle = NULL;
+    }
+  }
+
+  free(config->route_rules);
+  config->route_rules = NULL;
+  config->route_rule_count = 0;
+}
+
 // Minimal heuristic for per-thread queue depth with INI/env precedence
 static unsigned calc_queue_depth(const struct config_t *cfg) {
   if (cfg && cfg->g.present & GF_QUEUE_DEPTH) {
@@ -911,6 +951,7 @@ int main(int argc, char **argv) {
   }
   if (!any_port) {
     LOGE(LOGC_CORE, "No ports configured via INI vhosts");
+    cleanup_loaded_config(&config);
     return 1;
   }
 
@@ -937,11 +978,14 @@ int main(int argc, char **argv) {
        shutdown_state_name((int)g_shutdown_state));
 
   if (access_log_runtime_init(&config.g) != 0) {
+    cleanup_loaded_config(&config);
     return 1;
   }
 
   if (tls_global_init() != 0) {
     LOGE(LOGC_CORE, "TLS global init failed");
+    cleanup_loaded_config(&config);
+    access_log_runtime_shutdown();
     return 1;
   }
   tls_ready = 1;
@@ -950,7 +994,9 @@ int main(int argc, char **argv) {
 
   if (tls_init_vhost_contexts(&config, cerr) != 0) {
     LOGE(LOGC_CORE, "%s", cerr[0] ? cerr : "TLS context initialization failed");
+    cleanup_loaded_config(&config);
     tls_global_cleanup();
+    access_log_runtime_shutdown();
     return 1;
   }
 
@@ -970,6 +1016,11 @@ int main(int argc, char **argv) {
   if (use_shared_wake) {
     if (make_wake_pipe(shared_wake_pipe) != 0) {
       LOGE(LOGC_CORE, "Failed to create shared wake pipe");
+      cleanup_loaded_config(&config);
+      if (tls_ready) {
+        tls_global_cleanup();
+      }
+      access_log_runtime_shutdown();
       return 1;
     }
   }
@@ -989,6 +1040,11 @@ int main(int argc, char **argv) {
       if (shared_wake_pipe[1] >= 0) {
         close(shared_wake_pipe[1]);
       }
+      cleanup_loaded_config(&config);
+      if (tls_ready) {
+        tls_global_cleanup();
+      }
+      access_log_runtime_shutdown();
       return 1;
     }
     for (int i = 0; i < threads; ++i) {
@@ -1031,12 +1087,57 @@ int main(int argc, char **argv) {
     }
     free(wake_rds);
     free(wake_wrs);
+    cleanup_loaded_config(&config);
+    if (tls_ready) {
+      tls_global_cleanup();
+    }
+    access_log_runtime_shutdown();
     return 1;
   }
 
   int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
   pthread_attr_t attr;
-  pthread_attr_init(&attr);
+  int attr_rc = pthread_attr_init(&attr);
+  if (attr_rc != 0) {
+    LOGE(LOGC_CORE, "pthread_attr_init: %s", strerror(attr_rc));
+    goto startup_fail;
+  }
+
+  goto startup_continue;
+
+startup_fail:
+  free(tids);
+  free(workers);
+  if (shared_wake_pipe[0] >= 0) {
+    close(shared_wake_pipe[0]);
+  }
+  if (shared_wake_pipe[1] >= 0) {
+    close(shared_wake_pipe[1]);
+  }
+  if (wake_rds) {
+    for (int i = 0; i < threads; ++i) {
+      if (wake_rds[i] >= 0) {
+        close(wake_rds[i]);
+      }
+    }
+  }
+  if (wake_wrs) {
+    for (int i = 0; i < threads; ++i) {
+      if (wake_wrs[i] >= 0) {
+        close(wake_wrs[i]);
+      }
+    }
+  }
+  free(wake_rds);
+  free(wake_wrs);
+  cleanup_loaded_config(&config);
+  if (tls_ready) {
+    tls_global_cleanup();
+  }
+  access_log_runtime_shutdown();
+  return 1;
+
+startup_continue:
 
   for (int i = 0; i < threads; ++i) {
     struct worker_ctx *w = NULL;
@@ -1214,23 +1315,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  for (int i = 0; i < config.vhost_count; ++i) {
-    if (config.vhosts[i].docroot_fd >= 0) {
-      close(config.vhosts[i].docroot_fd);
-    }
-    for (unsigned h = 0; h < config.vhosts[i].custom_headers_count; h++) {
-      free(config.vhosts[i].custom_headers[h]);
-    }
-    auth_store_free(config.vhosts[i].auth_store);
-    config.vhosts[i].auth_store = NULL;
-  }
-
-  for (int i = 0; i < config.vhost_count; ++i) {
-    if (config.vhosts[i].tls_ctx_handle) {
-      tls_ctx_free((struct tls_ctx *)config.vhosts[i].tls_ctx_handle);
-      config.vhosts[i].tls_ctx_handle = NULL;
-    }
-  }
+  cleanup_loaded_config(&config);
 
   if (tls_ready) {
     tls_global_cleanup();

@@ -230,7 +230,9 @@ $(TEST_BIN_REQ_ARENA): unit/test_req_arena_greatest.c ../src/req_arena_stats.c |
 	$(CC) $(CFLAGS) -I vendor -o $@ $^
 
 $(TEST_BIN_CONFIG_INI): unit/test_config_ini_greatest.c ../src/config_ini.c ../src/logger.c ../third_party/inih/ini.c | $(BUILD)
-	$(CC) $(CFLAGS) -DINI_MAX_LINE=2048 -I vendor -o $@ $^
+	$(CC) $(CFLAGS) -DINI_MAX_LINE=2048 \
+		-DCONFIG_INI_TEST_HOOKS \
+		-I vendor -o $@ $^
 
 $(TEST_BIN_TX): unit/test_tx_greatest.c ../src/tx.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^
@@ -263,7 +265,9 @@ $(TEST_BIN_COMPRESSION): unit/test_compression_greatest.c ../src/compression.c $
 $(TEST_BIN_COMP_DYN): unit/test_compression_dynamic_greatest.c ../src/compression.c $(ZLIB_DEPS) $(BROTLI_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) $(ZLIB_CFLAGS) $(BROTLI_CFLAGS) -I vendor -o $@ unit/test_compression_dynamic_greatest.c ../src/compression.c $(ZLIB_LDFLAGS) $(ZLIB_LDLIBS) $(BROTLI_LDFLAGS) $(BROTLI_LDLIBS_FULL) $(LDFLAGS)
 
-$(TEST_BIN_STATIC_HDRS): unit/test_static_serve_headers_greatest.c ../src/compression.c $(ZLIB_DEPS) $(BROTLI_DEPS) | $(BUILD)
+# This test includes ../src/static_serve_utils.c directly, so keep explicit
+# deps on that source and the shared policy header to avoid stale green runs.
+$(TEST_BIN_STATIC_HDRS): unit/test_static_serve_headers_greatest.c ../src/compression.c ../src/static_serve_utils.c ../include/policy_headers_shared.h $(ZLIB_DEPS) $(BROTLI_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) $(ZLIB_CFLAGS) $(BROTLI_CFLAGS) -I vendor -o $@ unit/test_static_serve_headers_greatest.c ../src/compression.c $(ZLIB_LDFLAGS) $(ZLIB_LDLIBS) $(BROTLI_LDFLAGS) $(BROTLI_LDLIBS)
 
 TESTS ?= $(wildcard $(BUILD)/test_*)

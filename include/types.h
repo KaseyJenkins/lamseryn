@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "macros.h"
+#include "policy_types.h"
+#include "route_policy_types.h"
 
 struct auth_store;
 
@@ -74,6 +76,7 @@ enum {
   CFG_FEAT_CONDITIONAL = 1ULL << 2,
   CFG_FEAT_COMPRESSION = 1ULL << 3,
   CFG_FEAT_AUTH = 1ULL << 4,
+  CFG_FEAT_CORS = 1ULL << 5,
 };
 
 struct vhost_t {
@@ -114,6 +117,15 @@ struct vhost_t {
   char auth_basic_file[PATH_MAX];
   char auth_realm[64];
   struct auth_store *auth_store;
+
+  // Resolved route-policy rule pointers (sorted by precedence).
+  const struct route_policy_rule **route_rules;
+  uint16_t route_rule_count;
+  uint16_t route_rule_cap;
+
+  // Typed policy primitives: vhost-level defaults.
+  struct security_headers_policy *security_headers;
+  struct cors_policy *cors;
 
   // Custom response headers emitted on all static responses.
   // Each entry is a pre-formatted "Header-Name: value\r\n" string.
@@ -206,6 +218,9 @@ struct globals_cfg {
 struct config_t {
   int vhost_count;
   struct vhost_t vhosts[32];
+
+  int route_rule_count;
+  struct route_policy_rule *route_rules;
 
   // Runtime-global knobs.
   struct globals_cfg g;

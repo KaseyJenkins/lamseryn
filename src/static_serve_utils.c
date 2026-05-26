@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -14,6 +15,7 @@
 #include "include/compression.h"
 #include "include/conn.h"
 #include "include/http_headers.h"
+#include "include/policy_headers_shared.h"
 #include "include/http_range.h"
 #include "include/request_handlers.h"
 #include "include/static_serve_utils.h"
@@ -362,8 +364,14 @@ static int static_serve_check_not_modified(const struct conn *c,
   const char *ims = http_header_find_value(
     c->h1.req_hdrs, c->h1.req_hdr_count, HDR_ID_IF_MODIFIED_SINCE, &ims_len);
   if (ims && ims_len > 0) {
+    // Header values are length-delimited; parse from a bounded NUL-terminated copy.
+    char date_buf[64];
+    size_t copy_len = ims_len < sizeof(date_buf) - 1 ? ims_len : sizeof(date_buf) - 1;
+    memcpy(date_buf, ims, copy_len);
+    date_buf[copy_len] = '\0';
+
     time_t ims_time;
-    if (static_serve_parse_http_date(ims, &ims_time) == 0) {
+    if (static_serve_parse_http_date(date_buf, &ims_time) == 0) {
       if (st->st_mtim.tv_sec <= ims_time) {
         return 1;
       }
@@ -493,14 +501,18 @@ int static_serve_tx_set_dynamic_response_ex(struct conn *c,
 // Builds optional static-response headers (validators, Accept-Ranges, Content-Encoding, Vary, custom headers).
 // Returns bytes written and exports ETag for later conditional checks.
 // If Content-Encoding cannot fit, clears serving_enc so caller falls back to identity file.
-static size_t static_serve_assemble_extra_headers(
+static size_t static_serve_assemble_extra_headers_ex(
     char *buf, size_t bufsz,
     const struct stat *st,
     uint64_t features,
     unsigned *serving_enc,
     const char *ctype,
-    char *const *custom_headers, unsigned custom_headers_count,
-    char *etag_out, size_t etag_outsz, size_t *etag_out_len) {
+    const char *const *custom_headers, unsigned custom_headers_count,
+    char *etag_out, size_t etag_outsz, size_t *etag_out_len,
+    int *custom_headers_overflow) {
+  if (custom_headers_overflow) {
+    *custom_headers_overflow = 0;
+  }
   char last_mod_buf[64];
   size_t last_mod_len = 0;
   size_t etag_len = 0;
@@ -568,6 +580,8 @@ static size_t static_serve_assemble_extra_headers(
       memcpy(buf + vhdr_len, hdr, hlen);
       vhdr_len += hlen;
       buf[vhdr_len] = '\0';
+    } else if (custom_headers_overflow) {
+      *custom_headers_overflow = 1;
     }
   }
   return vhdr_len;
@@ -670,13 +684,66 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
     size_t etag_len = 0;
     char validator_hdrs[2048];
     unsigned orig_serving_enc = serving_enc;
-    char *const *custom_hdrs = vh ? (char *const *)vh->custom_headers : NULL;
-    unsigned custom_hdrs_n = vh ? vh->custom_headers_count : 0;
-    (void)static_serve_assemble_extra_headers(
+    struct policy_shared_header_ctx policy_hdrs;
+    const char *const *custom_hdrs = NULL;
+    unsigned custom_hdrs_n = 0;
+    int policy_headers_overflow = 0;
+
+    policy_shared_collect_headers(c, vh, &policy_hdrs);
+    custom_hdrs = policy_hdrs.count ? policy_hdrs.lines : NULL;
+    custom_hdrs_n = policy_hdrs.count;
+    if (policy_hdrs.overflow) {
+      policy_headers_overflow = 1;
+    }
+
+    (void)static_serve_assemble_extra_headers_ex(
       validator_hdrs, sizeof(validator_hdrs),
       &st, vh ? vh->features : 0, &serving_enc, ctype,
       custom_hdrs, custom_hdrs_n,
-      etag_buf, sizeof(etag_buf), &etag_len);
+      etag_buf, sizeof(etag_buf), &etag_len,
+      &policy_headers_overflow);
+
+    if (policy_headers_overflow) {
+      close(fd);
+      fd = -1;
+
+      struct request_response_plan plan = request_build_response_plan(RK_500,
+                                                                      /*keepalive=*/0,
+                                                                      /*drain_after_headers=*/0,
+                                                                      /*close_after_send=*/1);
+      const char *buf_500 = plan.response.buf;
+      size_t len_500 = plan.response.len;
+      if (plan.status_line) {
+        const char *built_buf = NULL;
+        size_t built_len = 0;
+        if (tx_build_headers(&c->tx,
+                             plan.status_line,
+                             /*content_type=*/NULL,
+                             /*emit_content_length=*/1,
+                             /*content_len=*/0,
+                             /*body=*/NULL,
+                             /*body_send_len=*/0,
+                             plan.keepalive,
+                             plan.drain_after_headers,
+                             /*extra_headers=*/NULL,
+                             &built_buf,
+                             &built_len)
+            == 0) {
+          buf_500 = built_buf;
+          len_500 = built_len;
+        }
+      }
+
+      struct tx_next_io out500 = {0};
+      (void)tx_begin_headers(&c->tx,
+                             plan.kind,
+                             buf_500,
+                             len_500,
+                             plan.keepalive,
+                             plan.drain_after_headers,
+                             &out500);
+      return 1;
+    }
     if (orig_serving_enc && !serving_enc) {
       // Content-Encoding header didn't fit — reopen the original
       // uncompressed file so we never send raw compressed bytes.
@@ -749,7 +816,7 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
               size_t cr_len = http_range_format_content_range_unsatisfied(
                 cr_buf, sizeof(cr_buf), (uint64_t)fsz);
               // Return 416 with Content-Range, Content-Length: 0, and validators.
-              char extra_416[512];
+              char extra_416[sizeof(validator_hdrs) + sizeof(cr_buf)];
               int elen = snprintf(extra_416, sizeof(extra_416),
                                   "%.*s%s",
                                   (int)cr_len, cr_buf, validator_hdrs);

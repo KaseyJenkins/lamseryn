@@ -38,6 +38,20 @@ struct request_static_serve_plan request_build_static_serve_plan(
 
 int request_static_open_err_merge(int a, int b) { (void)a; return b; }
 
+struct request_response_plan request_build_response_plan(enum resp_kind kind,
+                                                         int keepalive,
+                                                         int drain_after_headers,
+                                                         int close_after_send) {
+  struct request_response_plan plan;
+  memset(&plan, 0, sizeof(plan));
+  plan.kind = kind;
+  plan.keepalive = keepalive;
+  plan.drain_after_headers = drain_after_headers;
+  plan.close_after_send = close_after_send;
+  plan.status_line = "500 Internal Server Error";
+  return plan;
+}
+
 enum tx_decision tx_begin_headers(struct tx_state_t *tx, enum resp_kind rk,
                                   const char *buf, size_t len, int ka,
                                   int dah, struct tx_next_io *out) {

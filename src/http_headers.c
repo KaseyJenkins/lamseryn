@@ -21,6 +21,9 @@ static const struct hdr_spec g_specs[] = {
   {"if-none-match", 13, HDR_ID_IF_NONE_MATCH},
   {"authorization", 13, HDR_ID_AUTHORIZATION},
   {"cookie", 6, HDR_ID_COOKIE},
+  {"origin", 6, HDR_ID_ORIGIN},
+  {"access-control-request-method", 29, HDR_ID_ACCESS_CONTROL_REQUEST_METHOD},
+  {"access-control-request-headers", 30, HDR_ID_ACCESS_CONTROL_REQUEST_HEADERS},
 };
 
 uint64_t http_headers_store_mask(uint64_t features) {
@@ -37,6 +40,11 @@ uint64_t http_headers_store_mask(uint64_t features) {
   }
   if (features & CFG_FEAT_AUTH) {
     mask |= http_header_bit(HDR_ID_AUTHORIZATION) | http_header_bit(HDR_ID_COOKIE);
+  }
+  if (features & CFG_FEAT_CORS) {
+    mask |= http_header_bit(HDR_ID_ORIGIN)
+            | http_header_bit(HDR_ID_ACCESS_CONTROL_REQUEST_METHOD)
+            | http_header_bit(HDR_ID_ACCESS_CONTROL_REQUEST_HEADERS);
   }
 
   return mask;

@@ -118,6 +118,42 @@ TEST t_backoff_handler_resets_flags_and_rearms(void) {
   PASS();
 }
 
+TEST t_backoff_cqe_does_not_resume_accepts_while_draining(void) {
+  struct worker_ctx w;
+  memset(&w, 0, sizeof(w));
+  if (open_ring_or_skip(&w.ring, 8) < 0) {
+    PASS(); // skipped
+  }
+
+  w.accept_paused = 0;
+  w.accept_backoff_armed = 1;
+  w.accept_cancel_inflight = 0;
+  w.num_listeners = 1;
+  w.listen_fds[0] = 3;
+  w.accept_static[0] =
+    (struct op_ctx){.magic = OP_MAGIC, .type = OP_ACCEPT, .c = NULL, .fd = w.listen_fds[0]};
+
+  // Enter drain first, then process a stale backoff CQE in the same batch.
+  accept_enter_drain(&w);
+
+  ASSERT_EQ(w.is_draining, 1);
+  ASSERT_EQ(w.accept_paused, 1);
+  ASSERT_EQ(w.accept_cancel_inflight, 1);
+  ASSERT_EQ(w.accept_backoff_armed, 0);
+
+  struct op_ctx op = {.magic = OP_MAGIC, .type = OP_ACCEPT_BACKOFF, .c = NULL, .fd = -1};
+  struct io_uring_cqe cqe;
+  memset(&cqe, 0, sizeof(cqe));
+
+  ASSERT_EQ(accept_try_handle_cqe(&w, &op, &cqe), 1);
+  ASSERT_EQ(w.accept_paused, 1);
+  ASSERT_EQ(w.accept_cancel_inflight, 1);
+  ASSERT_EQ(w.accept_backoff_armed, 0);
+
+  close_ring(&w.ring);
+  PASS();
+}
+
 TEST t_accept_arm_startup_initializes_and_posts(void) {
   struct worker_ctx w;
   memset(&w, 0, sizeof(w));
@@ -209,6 +245,7 @@ SUITE(s_accept_controller) {
   RUN_TEST(t_emfile_backoff_sets_flags_and_arms_timer_real_ring);
   RUN_TEST(t_eagain_does_not_pause_or_arm_backoff);
   RUN_TEST(t_backoff_handler_resets_flags_and_rearms);
+  RUN_TEST(t_backoff_cqe_does_not_resume_accepts_while_draining);
   RUN_TEST(t_accept_arm_startup_initializes_and_posts);
   RUN_TEST(t_accept_is_fd_pressure_reflects_pause_or_cancel);
   RUN_TEST(t_accept_try_handle_cqe_dispatches_accept_backoff);
