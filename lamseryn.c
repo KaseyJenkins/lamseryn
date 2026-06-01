@@ -924,7 +924,12 @@ int main(int argc, char **argv) {
 
   int threads = 2;
 
-  struct config_t config = {0};
+  struct config_t *config = calloc(1, sizeof(*config));
+  if (!config) {
+    LOGE(LOGC_CORE, "config allocation failure");
+    return 1;
+  }
+
   char cerr[256] = {0};
   int tls_ready = 0;
   int startup_failed = 0;
@@ -933,30 +938,33 @@ int main(int argc, char **argv) {
   if (!ini_path || !*ini_path) {
     ini_path = "server.ini";
   }
-  if (config_load_ini(ini_path, &config, cerr) != 0 || config.vhost_count == 0) {
+  if (config_load_ini(ini_path, config, cerr) != 0 || config->vhost_count == 0) {
     LOGE(LOGC_CORE, "No vhosts configured in %s: %s", ini_path, cerr);
+    cleanup_loaded_config(config);
+    free(config);
     return 1;
   }
 
-  if (config.g.present & GF_SHUTDOWN_GRACE_MS) {
-    g_shutdown_grace_ms = config.g.shutdown_grace_ms;
+  if (config->g.present & GF_SHUTDOWN_GRACE_MS) {
+    g_shutdown_grace_ms = config->g.shutdown_grace_ms;
   }
 
   int any_port = 0;
-  for (int i = 0; i < config.vhost_count; ++i) {
-    if (config.vhosts[i].port) {
+  for (int i = 0; i < config->vhost_count; ++i) {
+    if (config->vhosts[i].port) {
       any_port = 1;
       break;
     }
   }
   if (!any_port) {
     LOGE(LOGC_CORE, "No ports configured via INI vhosts");
-    cleanup_loaded_config(&config);
+    cleanup_loaded_config(config);
+    free(config);
     return 1;
   }
 
-  if (config.g.present & GF_WORKERS) {
-    threads = (int)config.g.workers;
+  if (config->g.present & GF_WORKERS) {
+    threads = (int)config->g.workers;
   }
 
   if (threads < 1) {
@@ -966,25 +974,27 @@ int main(int argc, char **argv) {
     threads = 128;
   }
 
-  apply_globals_logging(&config);
+  apply_globals_logging(config);
   log_init_from_env();
   log_set_time_fn(time_now_ms_monotonic);
 
   LOGI(LOGC_CORE, "lamseryn %s starting", LAMSERYN_VERSION_STRING);
-  LOGI(LOGC_CORE, "Configured vhosts=%d", config.vhost_count);
+  LOGI(LOGC_CORE, "Configured vhosts=%d", config->vhost_count);
   LOGI(LOGC_CORE,
        "shutdown policy scaffold: grace_ms=%u state=%s",
        g_shutdown_grace_ms,
        shutdown_state_name((int)g_shutdown_state));
 
-  if (access_log_runtime_init(&config.g) != 0) {
-    cleanup_loaded_config(&config);
+  if (access_log_runtime_init(&config->g) != 0) {
+    cleanup_loaded_config(config);
+    free(config);
     return 1;
   }
 
   if (tls_global_init() != 0) {
     LOGE(LOGC_CORE, "TLS global init failed");
-    cleanup_loaded_config(&config);
+    cleanup_loaded_config(config);
+    free(config);
     access_log_runtime_shutdown();
     return 1;
   }
@@ -992,9 +1002,10 @@ int main(int argc, char **argv) {
 
   LOGI(LOGC_CORE, "TLS runtime: %s", tls_runtime_version());
 
-  if (tls_init_vhost_contexts(&config, cerr) != 0) {
+  if (tls_init_vhost_contexts(config, cerr) != 0) {
     LOGE(LOGC_CORE, "%s", cerr[0] ? cerr : "TLS context initialization failed");
-    cleanup_loaded_config(&config);
+    cleanup_loaded_config(config);
+    free(config);
     tls_global_cleanup();
     access_log_runtime_shutdown();
     return 1;
@@ -1008,7 +1019,7 @@ int main(int argc, char **argv) {
     setrlimit(RLIMIT_NOFILE, &rl);
   }
 
-  enum wake_pipe_mode wake_mode = parse_wake_pipe_mode(&config);
+  enum wake_pipe_mode wake_mode = parse_wake_pipe_mode(config);
   int use_shared_wake = (wake_mode == WAKE_PIPE_SHARED);
   LOGI(LOGC_CORE, "wake pipe mode: %s", use_shared_wake ? "shared" : "per-worker");
 
@@ -1016,7 +1027,8 @@ int main(int argc, char **argv) {
   if (use_shared_wake) {
     if (make_wake_pipe(shared_wake_pipe) != 0) {
       LOGE(LOGC_CORE, "Failed to create shared wake pipe");
-      cleanup_loaded_config(&config);
+      cleanup_loaded_config(config);
+      free(config);
       if (tls_ready) {
         tls_global_cleanup();
       }
@@ -1040,7 +1052,8 @@ int main(int argc, char **argv) {
       if (shared_wake_pipe[1] >= 0) {
         close(shared_wake_pipe[1]);
       }
-      cleanup_loaded_config(&config);
+      cleanup_loaded_config(config);
+      free(config);
       if (tls_ready) {
         tls_global_cleanup();
       }
@@ -1087,7 +1100,8 @@ int main(int argc, char **argv) {
     }
     free(wake_rds);
     free(wake_wrs);
-    cleanup_loaded_config(&config);
+    cleanup_loaded_config(config);
+    free(config);
     if (tls_ready) {
       tls_global_cleanup();
     }
@@ -1130,7 +1144,8 @@ startup_fail:
   }
   free(wake_rds);
   free(wake_wrs);
-  cleanup_loaded_config(&config);
+  cleanup_loaded_config(config);
+  free(config);
   if (tls_ready) {
     tls_global_cleanup();
   }
@@ -1158,7 +1173,7 @@ startup_continue:
 
     workers[i]->cfg.thread_id = i;
     workers[i]->cfg.cpu_core = (cpu_count > 0) ? (i % cpu_count) : -1;
-    workers[i]->cfg.config = &config;
+    workers[i]->cfg.config = config;
 
     if (use_shared_wake) {
       workers[i]->cfg.wake_rd = shared_wake_pipe[0];
@@ -1220,7 +1235,7 @@ startup_continue:
       }
 
       char rerr[256] = {0};
-      if (tls_reload_vhost_contexts(&config, rerr) == 0) {
+      if (tls_reload_vhost_contexts(config, rerr) == 0) {
         LOGI(LOGC_CORE, "TLS contexts reloaded on SIGHUP");
       } else {
         LOGE(LOGC_CORE, "TLS context reload failed%s%s", rerr[0] ? ": " : "", rerr[0] ? rerr : "");
@@ -1315,7 +1330,8 @@ startup_continue:
     }
   }
 
-  cleanup_loaded_config(&config);
+  cleanup_loaded_config(config);
+  free(config);
 
   if (tls_ready) {
     tls_global_cleanup();
