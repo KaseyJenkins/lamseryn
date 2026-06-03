@@ -725,6 +725,20 @@ if [[ "$ENABLE_EXTRA_ITESTS" == "1" ]]; then
   echo "[itest] running Expect:100-continue body timeout (expect 408)" >&2
   run_client expect-100-continue-timeout --nodelay
 
+  echo "[itest] running timeout policy-header coverage (expect 408 with policy headers)" >&2
+  stop_server
+  start_server "" "false" "stderr" "false" \
+    "$(printf 'header_set = X-Frame-Options: DENY')"
+  run_client body-timeout-policy-header --nodelay
+
+  echo "[itest] running timeout policy overflow fail-closed coverage (expect 500)" >&2
+  stop_server
+  OVERFLOW_HDR_VALUE=$(head -c 280 /dev/zero | tr '\0' 'A')
+  OVERFLOW_HDRS_INI=$(printf 'header_set = X-Long-0: %s\nheader_set = X-Long-1: %s\nheader_set = X-Long-2: %s\nheader_set = X-Long-3: %s' \
+    "$OVERFLOW_HDR_VALUE" "$OVERFLOW_HDR_VALUE" "$OVERFLOW_HDR_VALUE" "$OVERFLOW_HDR_VALUE")
+  start_server "" "false" "stderr" "false" "$OVERFLOW_HDRS_INI"
+  run_client body-timeout-policy-overflow-failclose --nodelay
+
   echo "[itest] running emergency fallback path checks (forced tx_build_headers failure)" >&2
   stop_server
   export TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS="400,408"

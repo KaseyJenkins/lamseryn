@@ -4,6 +4,7 @@ set -euo pipefail
 SERVER_BIN=${1:-build/lamseryn}
 PROTECTED_PORT=${2:-18081}
 PUBLIC_PORT=${3:-18082}
+OVERFLOW_PORT=${4:-18083}
 HOST=${HOST:-127.0.0.1}
 
 if [[ ! -x "$SERVER_BIN" ]]; then
@@ -54,6 +55,8 @@ printf 'public auth bypass ok\n' > "$PUBLIC_ROOT/index.html"
 PASS_HASH=$(openssl passwd -6 "hunter2")
 printf 'alice:%s\n' "$PASS_HASH" > "$HTPASSWD"
 
+OVERFLOW_HEADER_VALUE=$(head -c 280 /dev/zero | tr '\0' 'A')
+
 cat >"$ITEST_INI" <<EOF
 [globals]
 log_level = info
@@ -77,6 +80,7 @@ static = true
 auth = true
 auth_basic_file = $HTPASSWD
 auth_realm = Admin Area
+header_set = X-Frame-Options: DENY
 
 [vhost public]
 bind = $HOST
@@ -84,6 +88,19 @@ port = $PUBLIC_PORT
 docroot = $PUBLIC_ROOT
 static = true
 auth = false
+
+[vhost protected_overflow]
+bind = $HOST
+port = $OVERFLOW_PORT
+docroot = $PROTECTED_ROOT
+static = true
+auth = true
+auth_basic_file = $HTPASSWD
+auth_realm = Admin Area
+header_set = X-Long-0: $OVERFLOW_HEADER_VALUE
+header_set = X-Long-1: $OVERFLOW_HEADER_VALUE
+header_set = X-Long-2: $OVERFLOW_HEADER_VALUE
+header_set = X-Long-3: $OVERFLOW_HEADER_VALUE
 EOF
 
 wait_for_port() {
@@ -141,7 +158,7 @@ echo "[auth-itest] starting server: $SERVER_BIN" >&2
 SERVER_CONFIG="$ITEST_INI" "$SERVER_BIN" >"$LOG_FILE" 2>&1 &
 server_pid=$!
 
-if ! wait_for_port "$PROTECTED_PORT" || ! wait_for_port "$PUBLIC_PORT"; then
+if ! wait_for_port "$PROTECTED_PORT" || ! wait_for_port "$PUBLIC_PORT" || ! wait_for_port "$OVERFLOW_PORT"; then
   echo "[auth-itest] server did not start listening" >&2
   tail -n 200 "$LOG_FILE" >&2 || true
   exit 1
@@ -151,6 +168,7 @@ echo "[auth-itest] protected vhost without credentials -> 401" >&2
 status=$(request_status "$PROTECTED_PORT")
 [[ "$status" == "401" ]]
 grep -iq '^WWW-Authenticate: Basic realm="Admin Area"' "$HDR_FILE"
+grep -iq '^X-Frame-Options: DENY' "$HDR_FILE"
 
 echo "[auth-itest] protected vhost with wrong credentials -> 401" >&2
 status=$(request_status "$PROTECTED_PORT" 'alice:wrong')
@@ -165,5 +183,9 @@ echo "[auth-itest] public vhost without credentials -> 200" >&2
 status=$(request_status "$PUBLIC_PORT")
 [[ "$status" == "200" ]]
 grep -q 'public auth bypass ok' "$BODY_FILE"
+
+echo "[auth-itest] protected overflow vhost without credentials -> fail-closed 500" >&2
+status=$(request_status "$OVERFLOW_PORT")
+[[ "$status" == "500" ]]
 
 echo "[auth-itest] success" >&2

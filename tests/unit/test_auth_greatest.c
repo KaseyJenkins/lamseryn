@@ -571,6 +571,72 @@ TEST t_auth_check_missing_header_rejects(void) {
   PASS();
 }
 
+TEST t_auth_check_missing_header_rejects_with_policy_headers(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct auth_store store;
+  struct security_headers_policy vh_sec;
+
+  if (build_single_user_store(&store, "alice", "hunter2") != 0) {
+    SKIPm("$6$ not supported on this host");
+  }
+
+  memset(&vh_sec, 0, sizeof(vh_sec));
+  vh_sec.enabled = 1;
+  vh_sec.enabled_set = 1;
+  snprintf(vh_sec.headers[0].name, sizeof(vh_sec.headers[0].name), "%s", "X-Frame-Options");
+  snprintf(vh_sec.headers[0].value, sizeof(vh_sec.headers[0].value), "%s", "DENY");
+  vh_sec.header_count = 1;
+
+  reset_auth_stubs();
+  init_auth_conn(&c, &vh, &store, NULL, 0);
+  vh.security_headers = &vh_sec;
+
+  ASSERT_EQ(auth_basic_check(&c), 1);
+  ASSERT_EQ(g_tx_build_calls, 1u);
+  ASSERT_EQ(g_tx_begin_calls, 1u);
+  ASSERT_EQ(g_last_resp_kind, RK_401);
+  ASSERT_STR_EQ(g_last_status, "401 Unauthorized");
+  ASSERT(strstr(g_last_extra_headers, "WWW-Authenticate: Basic realm=\"Admin Area\"\r\n") != NULL);
+  ASSERT(strstr(g_last_extra_headers, "X-Frame-Options: DENY\r\n") != NULL);
+  PASS();
+}
+
+TEST t_auth_check_policy_overflow_fail_closes(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct auth_store store;
+  char value[280];
+  char h0[340];
+  char h1[340];
+  char h2[340];
+  char h3[340];
+
+  if (build_single_user_store(&store, "alice", "hunter2") != 0) {
+    SKIPm("$6$ not supported on this host");
+  }
+
+  memset(value, 'A', sizeof(value) - 1);
+  value[sizeof(value) - 1] = '\0';
+  snprintf(h0, sizeof(h0), "X-Long-0: %s\r\n", value);
+  snprintf(h1, sizeof(h1), "X-Long-1: %s\r\n", value);
+  snprintf(h2, sizeof(h2), "X-Long-2: %s\r\n", value);
+  snprintf(h3, sizeof(h3), "X-Long-3: %s\r\n", value);
+
+  reset_auth_stubs();
+  init_auth_conn(&c, &vh, &store, NULL, 0);
+  vh.custom_headers[0] = h0;
+  vh.custom_headers[1] = h1;
+  vh.custom_headers[2] = h2;
+  vh.custom_headers[3] = h3;
+  vh.custom_headers_count = 4;
+
+  ASSERT_EQ(auth_basic_check(&c), -1);
+  ASSERT_EQ(g_tx_build_calls, 0u);
+  ASSERT_EQ(g_tx_begin_calls, 0u);
+  PASS();
+}
+
 TEST t_auth_check_wrong_scheme_rejects(void) {
   struct conn c;
   struct vhost_t vh;
@@ -816,6 +882,8 @@ TEST t_auth_check_tx_build_failure_returns_internal_error(void) {
 SUITE(s_auth_check) {
   RUN_TEST(t_auth_check_no_store_allows);
   RUN_TEST(t_auth_check_missing_header_rejects);
+  RUN_TEST(t_auth_check_missing_header_rejects_with_policy_headers);
+  RUN_TEST(t_auth_check_policy_overflow_fail_closes);
   RUN_TEST(t_auth_check_wrong_scheme_rejects);
   RUN_TEST(t_auth_check_bad_base64_rejects);
   RUN_TEST(t_auth_check_wrong_password_rejects);

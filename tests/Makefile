@@ -119,6 +119,7 @@ TEST_BIN_REAL           := $(BUILD)/test_http_pipeline_real
 TEST_BIN_GREATEST       := $(BUILD)/test_http_pipeline_greatest
 TEST_BIN_STORE          := $(BUILD)/test_conn_store_greatest
 TEST_BIN_HANDLERS       := $(BUILD)/test_request_handlers_greatest
+TEST_BIN_HANDLERS_NO503 := $(BUILD)/test_request_handlers_no503_greatest
 TEST_BIN_WHEEL          := $(BUILD)/test_timing_wheel_greatest
 TEST_BIN_BUFFERPOOL     := $(BUILD)/test_buffer_pool_greatest
 TEST_BIN_RINGOPS        := $(BUILD)/test_ring_ops_greatest
@@ -148,6 +149,7 @@ all: $(TEST_BIN_REAL) \
      $(TEST_BIN_GREATEST) \
      $(TEST_BIN_STORE) \
      $(TEST_BIN_HANDLERS) \
+     $(TEST_BIN_HANDLERS_NO503) \
      $(TEST_BIN_WHEEL) \
      $(TEST_BIN_BUFFERPOOL) \
      $(TEST_BIN_RINGOPS) \
@@ -190,8 +192,11 @@ $(TEST_BIN_STORE): unit/test_conn_store_greatest.c ../src/conn_store.c ../src/lo
 $(TEST_BIN_HANDLERS): unit/test_request_handlers_greatest.c ../src/request_handlers.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS)
 
+$(TEST_BIN_HANDLERS_NO503): unit/test_request_handlers_greatest.c ../src/request_handlers.c | $(BUILD)
+	$(CC) $(CFLAGS) -DENABLE_OVERLOAD_503=0 -I vendor -o $@ $^ $(LDFLAGS)
+
 $(TEST_BIN_WHEEL): unit/test_timing_wheel_greatest.c ../src/timing_wheel.c ../src/request_handlers.c ../src/tx.c $(LIBURING_DEPS) | $(BUILD)
-	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
+	$(CC) $(CFLAGS) -DENABLE_ITEST_ECHO=1 -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
 $(TEST_BIN_BUFFERPOOL): unit/test_buffer_pool_greatest.c ../src/buffer_pool.c ../src/logger.c $(LIBURING_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)

@@ -54,7 +54,15 @@ static int request_hdr_appendf(char *buf, size_t cap, size_t *off, const char *f
 }
 
 static int request_response_kind_supports_policy(enum resp_kind kind) {
-  return (kind == RK_403 || kind == RK_404 || kind == RK_405) ? 1 : 0;
+  return (kind == RK_400 || kind == RK_403 || kind == RK_404 || kind == RK_405
+          || kind == RK_408 || kind == RK_413 || kind == RK_431 || kind == RK_500
+          || kind == RK_501
+#if ENABLE_OVERLOAD_503
+          || kind == RK_503
+#endif
+          )
+           ? 1
+           : 0;
 }
 
 int request_build_policy_extra_headers(const struct conn *c,

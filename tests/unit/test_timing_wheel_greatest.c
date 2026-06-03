@@ -218,6 +218,25 @@ TEST t_process_tick_header_timeout_stages_408_send(void) {
   tw_init(&w, 64, TW_TICK_MS, 1000);
 
   struct conn *c = make_conn_base(7);
+  struct vhost_t vh;
+  struct security_headers_policy vh_sec;
+  memset(&vh, 0, sizeof(vh));
+  memset(&vh_sec, 0, sizeof(vh_sec));
+
+  vh.security_headers = &vh_sec;
+  vh.security_headers->enabled = 1;
+  vh.security_headers->enabled_set = 1;
+  snprintf(vh.security_headers->headers[0].name,
+           sizeof(vh.security_headers->headers[0].name),
+           "%s",
+           "X-Frame-Options");
+  snprintf(vh.security_headers->headers[0].value,
+           sizeof(vh.security_headers->headers[0].value),
+           "%s",
+           "DENY");
+  vh.security_headers->header_count = 1;
+  c->vhost = &vh;
+
   c->dl.ka_idle = 0;
   c->h1.headers_done = 0;
   c->h1.parser_bytes = 1;
@@ -240,8 +259,107 @@ TEST t_process_tick_header_timeout_stages_408_send(void) {
   ASSERT(w.sqes_pending >= 1);
   ASSERT(c->tx.write_buf != NULL);
   ASSERT(c->tx.write_len > 0);
+  ASSERT(strstr(c->tx.write_buf, "HTTP/1.1 408 Request Timeout") != NULL);
+  ASSERT(strstr(c->tx.write_buf, "X-Frame-Options: DENY\r\n") != NULL);
   ASSERT_EQ((int)c->dl.deadline_active, 0);
   ASSERT_EQ((int)c->refcnt, 2);
+
+  tx_discard(&c->tx);
+  free(c);
+  close_ring(&w.ring);
+  PASS();
+}
+
+TEST t_process_tick_header_timeout_policy_overflow_fail_closes_500(void) {
+  memset(&w, 0, sizeof(w));
+  if (open_ring_or_skip(&w.ring, 8) < 0) {
+    PASS();
+  }
+  tw_init(&w, 64, TW_TICK_MS, 1000);
+
+  struct conn *c = make_conn_base(17);
+  struct vhost_t vh;
+  char value[280];
+  char h0[340];
+  char h1[340];
+  char h2[340];
+  char h3[340];
+  memset(&vh, 0, sizeof(vh));
+  memset(value, 'A', sizeof(value) - 1);
+  value[sizeof(value) - 1] = '\0';
+  snprintf(h0, sizeof(h0), "X-Long-0: %s\r\n", value);
+  snprintf(h1, sizeof(h1), "X-Long-1: %s\r\n", value);
+  snprintf(h2, sizeof(h2), "X-Long-2: %s\r\n", value);
+  snprintf(h3, sizeof(h3), "X-Long-3: %s\r\n", value);
+  vh.custom_headers[0] = h0;
+  vh.custom_headers[1] = h1;
+  vh.custom_headers[2] = h2;
+  vh.custom_headers[3] = h3;
+  vh.custom_headers_count = 4;
+  c->vhost = &vh;
+
+  c->dl.ka_idle = 0;
+  c->h1.headers_done = 0;
+  c->h1.parser_bytes = 1;
+  c->dl.header_start_ms = 0;
+
+  tw_reschedule(&w, c, HEADER_TIMEOUT_MS);
+  ASSERT_EQ(c->dl.deadline_kind, DK_HEADER_TIMEOUT);
+  ASSERT_EQ((int)c->dl.deadline_active, 1);
+
+  g_close_calls = 0;
+  g_close_last_fd = -1;
+
+  tw_process_tick(&w, HEADER_TIMEOUT_MS);
+
+  ASSERT_EQ(g_close_calls, 0);
+  ASSERT_EQ(c->tx.resp_kind, RK_500);
+  ASSERT_EQ((int)c->dl.closing, 1);
+  ASSERT_EQ((int)w.need_submit, 1);
+  ASSERT(w.sqes_pending >= 1);
+  ASSERT(c->tx.write_buf != NULL);
+  ASSERT(c->tx.write_len > 0);
+  ASSERT(strstr(c->tx.write_buf, "HTTP/1.1 500 Internal Server Error") != NULL);
+  ASSERT_EQ((int)c->dl.deadline_active, 0);
+
+  tx_discard(&c->tx);
+  free(c);
+  close_ring(&w.ring);
+  PASS();
+}
+
+TEST t_process_tick_header_timeout_tx_build_fail_falls_back_static_408(void) {
+  memset(&w, 0, sizeof(w));
+  if (open_ring_or_skip(&w.ring, 8) < 0) {
+    PASS();
+  }
+  tw_init(&w, 64, TW_TICK_MS, 1000);
+
+  struct conn *c = make_conn_base(27);
+  c->dl.ka_idle = 0;
+  c->h1.headers_done = 0;
+  c->h1.parser_bytes = 1;
+  c->dl.header_start_ms = 0;
+
+  tw_reschedule(&w, c, HEADER_TIMEOUT_MS);
+  ASSERT_EQ(c->dl.deadline_kind, DK_HEADER_TIMEOUT);
+  ASSERT_EQ((int)c->dl.deadline_active, 1);
+
+  int set_rc = setenv("TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS", "408", 1);
+  if (set_rc == 0) {
+    tw_process_tick(&w, HEADER_TIMEOUT_MS);
+  }
+  int unset_rc = unsetenv("TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS");
+
+  ASSERT_EQ(set_rc, 0);
+  ASSERT_EQ(unset_rc, 0);
+
+  ASSERT_EQ(c->tx.resp_kind, RK_408);
+  ASSERT_EQ((int)c->dl.closing, 1);
+  ASSERT(c->tx.write_buf != NULL);
+  ASSERT_EQ(c->tx.write_len, RESP_408_len);
+  ASSERT(memcmp(c->tx.write_buf, RESP_408, RESP_408_len) == 0);
+  ASSERT_EQ((int)c->dl.deadline_active, 0);
 
   tx_discard(&c->tx);
   free(c);
@@ -292,11 +410,15 @@ SUITE(s_timing_wheel) {
   RUN_TEST(t_none_or_closing_no_deadline);
   RUN_TEST(t_process_tick_expires_ka_idle_closes);
   RUN_TEST(t_process_tick_header_timeout_stages_408_send);
+  RUN_TEST(t_process_tick_header_timeout_policy_overflow_fail_closes_500);
+  RUN_TEST(t_process_tick_header_timeout_tx_build_fail_falls_back_static_408);
   RUN_TEST(t_process_tick_reinserts_not_yet_expired_deadline);
 }
 
 GREATEST_MAIN_DEFS();
 int main(int argc, char **argv) {
+  // Keep external shell env from changing unrelated test behavior.
+  (void)unsetenv("TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS");
   GREATEST_MAIN_BEGIN();
   RUN_SUITE(s_timing_wheel);
   GREATEST_MAIN_END();

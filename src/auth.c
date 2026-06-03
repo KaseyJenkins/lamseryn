@@ -2,16 +2,65 @@
 #include "include/conn.h"
 #include "include/http_headers.h"
 #include "include/logger.h"
+#include "include/policy_headers_shared.h"
 #include "include/tx.h"
 #include "include/types.h"
 
 #include <crypt.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+
+static int auth_hdr_appendf(char *buf, size_t cap, size_t *off, const char *fmt, ...) {
+  if (!buf || !off || !fmt || *off >= cap) {
+    return -1;
+  }
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf + *off, cap - *off, fmt, ap);
+  va_end(ap);
+  if (n <= 0 || (size_t)n >= (cap - *off)) {
+    return -1;
+  }
+  *off += (size_t)n;
+  return 0;
+}
+
+static int auth_build_policy_extra_headers(const struct conn *c, char out[1024]) {
+  if (!out) {
+    return -1;
+  }
+  out[0] = '\0';
+
+  if (!c || !c->vhost) {
+    return 0;
+  }
+
+  struct policy_shared_header_ctx ctx;
+  policy_shared_collect_headers(c, c->vhost, &ctx);
+  if (ctx.overflow) {
+    return -1;
+  }
+  if (ctx.count == 0) {
+    return 0;
+  }
+
+  size_t off = 0;
+  for (unsigned i = 0; i < ctx.count; ++i) {
+    if (!ctx.lines[i] || !ctx.lines[i][0]) {
+      continue;
+    }
+    if (auth_hdr_appendf(out, 1024, &off, "%s", ctx.lines[i]) != 0) {
+      out[0] = '\0';
+      return -1;
+    }
+  }
+  return (off > 0) ? 1 : 0;
+}
 
 /* ---------------------------------------------------------------------------
  * Constant-time string comparison — used to compare crypt_r output.
@@ -400,6 +449,9 @@ int auth_basic_check(struct conn *c) {
 deny:;
   /* --- Build and stage a 401 response. --- */
   char challenge[128];
+  char policy_extra_headers[1024];
+  char extra_headers[1280];
+  size_t extra_off = 0;
   int n = snprintf(challenge,
                    sizeof(challenge),
                    "WWW-Authenticate: Basic realm=\"%s\"\r\n",
@@ -407,6 +459,27 @@ deny:;
   if (n <= 0 || (size_t)n >= sizeof(challenge)) {
     /* Realm string is validated at config load; this should not happen. */
     snprintf(challenge, sizeof(challenge), "WWW-Authenticate: Basic realm=\"Restricted\"\r\n");
+  }
+
+  int policy_extra_headers_rc = auth_build_policy_extra_headers(c, policy_extra_headers);
+  if (policy_extra_headers_rc < 0) {
+    /* Fail closed to 500 on policy assembly failure. */
+    return -1;
+  }
+
+  extra_headers[0] = '\0';
+  if (auth_hdr_appendf(extra_headers, sizeof(extra_headers), &extra_off, "%s", challenge) != 0) {
+    return -1;
+  }
+  if (policy_extra_headers_rc > 0) {
+    if (auth_hdr_appendf(extra_headers,
+                         sizeof(extra_headers),
+                         &extra_off,
+                         "%s",
+                         policy_extra_headers)
+        != 0) {
+      return -1;
+    }
   }
 
   static const char body[] = "Unauthorized\n";
@@ -424,7 +497,7 @@ deny:;
                        body_len,
                        ka,
                        /*drain_after_headers=*/0,
-                       challenge,
+                       extra_headers,
                        &buf,
                        &len)
       != 0) {

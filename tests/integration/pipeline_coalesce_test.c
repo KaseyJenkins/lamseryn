@@ -1794,6 +1794,94 @@ static int test_body_timeout_fallback_408(const char *host,
   return 0;
 }
 
+static int test_body_timeout_policy_header_408(const char *host,
+                                               const char *port,
+                                               int nodelay,
+                                               int timeout_ms,
+                                               int verbose) {
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *hdr =
+      "GET / HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Content-Length: 5\r\n"
+      "Connection: keep-alive\r\n"
+      "\r\n";
+
+  if (send_all(fd, hdr, strlen(hdr)) < 0) {
+    close(fd);
+    die("send hdr failed: %s", strerror(errno));
+  }
+
+  if (send_all(fd, "h", 1) < 0) {
+    close(fd);
+    die("send body byte failed: %s", strerror(errno));
+  }
+
+  struct timespec ts;
+  ts.tv_sec = 0;
+  ts.tv_nsec = 600 * 1000 * 1000L; // 600ms
+  nanosleep(&ts, NULL);
+
+  if (read_one_response_prefix_expect_header(fd,
+                                             408,
+                                             "X-Frame-Options",
+                                             verbose)
+      != 0) {
+    close(fd);
+    die("read failed (missing X-Frame-Options header or wrong status)");
+  }
+
+  close(fd);
+  info("body_timeout_policy_header_408: OK");
+  return 0;
+}
+
+static int test_body_timeout_policy_overflow_failclose_500(const char *host,
+                                                           const char *port,
+                                                           int nodelay,
+                                                           int timeout_ms,
+                                                           int verbose) {
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *hdr =
+      "GET / HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Content-Length: 5\r\n"
+      "Connection: keep-alive\r\n"
+      "\r\n";
+
+  if (send_all(fd, hdr, strlen(hdr)) < 0) {
+    close(fd);
+    die("send hdr failed: %s", strerror(errno));
+  }
+
+  if (send_all(fd, "h", 1) < 0) {
+    close(fd);
+    die("send body byte failed: %s", strerror(errno));
+  }
+
+  struct timespec ts;
+  ts.tv_sec = 0;
+  ts.tv_nsec = 600 * 1000 * 1000L; // 600ms
+  nanosleep(&ts, NULL);
+
+  if (read_one_response_prefix_expect_no_header(fd,
+                                                500,
+                                                "X-Long-0",
+                                                verbose)
+      != 0) {
+    close(fd);
+    die("read failed (expected fail-closed 500 without overflow header)");
+  }
+
+  close(fd);
+  info("body_timeout_policy_overflow_failclose_500: OK");
+  return 0;
+}
+
 static int test_expect_100_continue_ok(const char *host, const char *port,
                                        int nodelay, int timeout_ms,
                                        int verbose) {
@@ -3841,6 +3929,8 @@ static void usage(const char *prog) {
           "  body-too-large-chunked [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-timeout [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-timeout-fallback [-H host] [-P port] [--nodelay] [-v]\n"
+          "  body-timeout-policy-header [-H host] [-P port] [--nodelay] [-v]\n"
+          "  body-timeout-policy-overflow-failclose [-H host] [-P port] [--nodelay] [-v]\n"
           "  expect-100-continue-ok [-H host] [-P port] [--nodelay] [-v]\n"
           "  expect-unsupported-reject [-H host] [-P port] [--nodelay] [-v]\n"
           "  expect-100-continue-timeout [-H host] [-P port] [--nodelay] [-v]\n"
@@ -3983,6 +4073,18 @@ int main(int argc, char **argv) {
 
   if (!strcmp(mode, "body-timeout-fallback")) {
     return test_body_timeout_fallback_408(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "body-timeout-policy-header")) {
+    return test_body_timeout_policy_header_408(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "body-timeout-policy-overflow-failclose")) {
+    return test_body_timeout_policy_overflow_failclose_500(host,
+                                                           port,
+                                                           nodelay,
+                                                           timeout_ms,
+                                                           verbose);
   }
 
   if (!strcmp(mode, "expect-100-continue-ok")) {

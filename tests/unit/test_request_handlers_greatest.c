@@ -39,11 +39,19 @@ static int g_static_serve_calls = 0;
 static int g_tx_build_headers_calls = 0;
 static char g_tx_last_status[64];
 static char g_tx_last_extra[1024];
+static int g_tx_last_keepalive = -1;
+static int g_tx_last_drain_after_headers = -1;
+static int g_tx_last_emit_content_length = -1;
+static size_t g_tx_last_content_len = (size_t)-1;
 
 static void reset_tx_stubs(void) {
   g_tx_build_headers_calls = 0;
   g_tx_last_status[0] = '\0';
   g_tx_last_extra[0] = '\0';
+  g_tx_last_keepalive = -1;
+  g_tx_last_drain_after_headers = -1;
+  g_tx_last_emit_content_length = -1;
+  g_tx_last_content_len = (size_t)-1;
 }
 
 // Stub for auth_basic_check: all test vhosts have auth_store=NULL so this
@@ -116,14 +124,14 @@ int tx_build_headers(struct tx_state_t *tx,
                      size_t *len) {
   (void)tx;
   (void)content_type;
-  (void)emit_content_length;
-  (void)content_len;
   (void)body;
   (void)body_send_len;
-  (void)keepalive;
-  (void)drain_after_headers;
 
   g_tx_build_headers_calls++;
+  g_tx_last_keepalive = keepalive;
+  g_tx_last_drain_after_headers = drain_after_headers;
+  g_tx_last_emit_content_length = emit_content_length;
+  g_tx_last_content_len = content_len;
   snprintf(g_tx_last_status, sizeof(g_tx_last_status), "%s", status_line ? status_line : "");
   snprintf(g_tx_last_extra,
            sizeof(g_tx_last_extra),
@@ -136,6 +144,64 @@ int tx_build_headers(struct tx_state_t *tx,
   }
   if (len) {
     *len = sizeof(fake) - 1;
+  }
+  return 0;
+}
+
+static int assert_error_header_build_with_policy(struct conn *c,
+                                                 enum resp_kind kind,
+                                                 const char *expect_status,
+                                                 int expect_keepalive,
+                                                 int expect_drain_after_headers,
+                                                 int expect_close_after_send) {
+  char extra_headers[1024];
+  const char *extra_headers_ptr = NULL;
+  const char *built_buf = NULL;
+  size_t built_len = 0;
+
+  reset_tx_stubs();
+  memset(extra_headers, 0, sizeof(extra_headers));
+
+  struct request_response_plan plan = request_build_response_plan(kind,
+                                                                  expect_keepalive,
+                                                                  expect_drain_after_headers,
+                                                                  expect_close_after_send);
+  int extra_headers_rc = request_build_policy_extra_headers(c, plan.kind, extra_headers);
+  if (extra_headers_rc != 1) {
+    return -1;
+  }
+
+  plan = request_policy_fail_closed_response_plan(plan, extra_headers_rc);
+    if (plan.kind != kind || plan.keepalive != expect_keepalive
+      || plan.drain_after_headers != expect_drain_after_headers
+      || plan.close_after_send != expect_close_after_send || !plan.status_line
+      || strcmp(plan.status_line, expect_status) != 0) {
+    return -1;
+  }
+
+  extra_headers_ptr = extra_headers;
+  if (tx_build_headers(&c->tx,
+                       plan.status_line,
+                       /*content_type=*/NULL,
+                       /*emit_content_length=*/1,
+                       /*content_len=*/0,
+                       /*body=*/NULL,
+                       /*body_send_len=*/0,
+                       plan.keepalive,
+                       plan.drain_after_headers,
+                       extra_headers_ptr,
+                       &built_buf,
+                       &built_len)
+      != 0) {
+    return -1;
+  }
+  if (g_tx_build_headers_calls != 1 || strcmp(g_tx_last_status, expect_status) != 0
+      || g_tx_last_emit_content_length != 1 || g_tx_last_content_len != 0
+      || g_tx_last_keepalive != expect_keepalive
+      || g_tx_last_drain_after_headers != expect_drain_after_headers
+      || !strstr(g_tx_last_extra, "X-Frame-Options: DENY\r\n") || !built_buf
+      || built_len == 0) {
+    return -1;
   }
   return 0;
 }
@@ -170,6 +236,9 @@ TEST t_errors_map(void) {
 
   struct request_response_plan p431 = request_build_response_plan(RK_431, 0, 1, 0);
   ASSERT_STR_EQ(p431.status_line, "431 Request Header Fields Too Large");
+  ASSERT_EQ(p431.keepalive, 0);
+  ASSERT_EQ(p431.drain_after_headers, 1);
+  ASSERT_EQ(p431.close_after_send, 0);
 
   struct request_response_plan p501 = request_build_response_plan(RK_501, 0, 0, 1);
   ASSERT_STR_EQ(p501.status_line, "501 Not Implemented");
@@ -804,7 +873,7 @@ TEST t_request_policy_extra_headers_route_override_and_dedup(void) {
   PASS();
 }
 
-TEST t_request_policy_extra_headers_unsupported_kind_returns_none(void) {
+TEST t_request_policy_extra_headers_parser_error_kinds_supported(void) {
   struct conn c;
   struct vhost_t vh;
   struct security_headers_policy vh_sec;
@@ -830,8 +899,177 @@ TEST t_request_policy_extra_headers_unsupported_kind_returns_none(void) {
   vh.security_headers->header_count = 1;
 
   int rc = request_build_policy_extra_headers(&c, RK_400, extra);
+  ASSERT_EQ(rc, 1);
+  ASSERT(strstr(extra, "X-Frame-Options: DENY\r\n") != NULL);
+
+  memset(extra, 0, sizeof(extra));
+  rc = request_build_policy_extra_headers(&c, RK_413, extra);
+  ASSERT_EQ(rc, 1);
+  ASSERT(strstr(extra, "X-Frame-Options: DENY\r\n") != NULL);
+
+  memset(extra, 0, sizeof(extra));
+  rc = request_build_policy_extra_headers(&c, RK_431, extra);
+  ASSERT_EQ(rc, 1);
+  ASSERT(strstr(extra, "X-Frame-Options: DENY\r\n") != NULL);
+
+  memset(extra, 0, sizeof(extra));
+  rc = request_build_policy_extra_headers(&c, RK_408, extra);
+  ASSERT_EQ(rc, 1);
+  ASSERT(strstr(extra, "X-Frame-Options: DENY\r\n") != NULL);
+  PASS();
+}
+
+TEST t_request_policy_extra_headers_server_error_kinds_supported(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct security_headers_policy vh_sec;
+  char extra[1024];
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&vh_sec, 0, sizeof(vh_sec));
+  memset(extra, 0, sizeof(extra));
+
+  c.vhost = &vh;
+  vh.security_headers = &vh_sec;
+  vh.security_headers->enabled = 1;
+  vh.security_headers->enabled_set = 1;
+  snprintf(vh.security_headers->headers[0].name,
+           sizeof(vh.security_headers->headers[0].name),
+           "%s",
+           "X-Frame-Options");
+  snprintf(vh.security_headers->headers[0].value,
+           sizeof(vh.security_headers->headers[0].value),
+           "%s",
+           "DENY");
+  vh.security_headers->header_count = 1;
+
+  int rc = request_build_policy_extra_headers(&c, RK_500, extra);
+  ASSERT_EQ(rc, 1);
+  ASSERT(strstr(extra, "X-Frame-Options: DENY\r\n") != NULL);
+
+  memset(extra, 0, sizeof(extra));
+  rc = request_build_policy_extra_headers(&c, RK_501, extra);
+  ASSERT_EQ(rc, 1);
+  ASSERT(strstr(extra, "X-Frame-Options: DENY\r\n") != NULL);
+
+  memset(extra, 0, sizeof(extra));
+  rc = request_build_policy_extra_headers(&c, RK_503, extra);
+#if ENABLE_OVERLOAD_503
+  ASSERT_EQ(rc, 1);
+  ASSERT(strstr(extra, "X-Frame-Options: DENY\r\n") != NULL);
+#else
   ASSERT_EQ(rc, 0);
   ASSERT_EQ(extra[0], '\0');
+#endif
+  PASS();
+}
+
+TEST t_request_policy_extra_headers_unmigrated_kind_returns_none(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct security_headers_policy vh_sec;
+  char extra[1024];
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&vh_sec, 0, sizeof(vh_sec));
+  memset(extra, 0, sizeof(extra));
+
+  c.vhost = &vh;
+  vh.security_headers = &vh_sec;
+  vh.security_headers->enabled = 1;
+  vh.security_headers->enabled_set = 1;
+  snprintf(vh.security_headers->headers[0].name,
+           sizeof(vh.security_headers->headers[0].name),
+           "%s",
+           "X-Frame-Options");
+  snprintf(vh.security_headers->headers[0].value,
+           sizeof(vh.security_headers->headers[0].value),
+           "%s",
+           "DENY");
+  vh.security_headers->header_count = 1;
+
+  int rc = request_build_policy_extra_headers(&c, RK_401, extra);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(extra[0], '\0');
+  PASS();
+}
+
+TEST t_error_header_build_pipeline_migrated_kinds(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct security_headers_policy vh_sec;
+
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&vh_sec, 0, sizeof(vh_sec));
+
+  c.vhost = &vh;
+  vh.security_headers = &vh_sec;
+  vh.security_headers->enabled = 1;
+  vh.security_headers->enabled_set = 1;
+  snprintf(vh.security_headers->headers[0].name,
+           sizeof(vh.security_headers->headers[0].name),
+           "%s",
+           "X-Frame-Options");
+  snprintf(vh.security_headers->headers[0].value,
+           sizeof(vh.security_headers->headers[0].value),
+           "%s",
+           "DENY");
+  vh.security_headers->header_count = 1;
+
+  ASSERT_EQ(assert_error_header_build_with_policy(&c,
+                                                  RK_400,
+                                                  "400 Bad Request",
+                                                  /*keepalive=*/0,
+                                                  /*drain_after_headers=*/0,
+                                                  /*close_after_send=*/1),
+            0);
+  ASSERT_EQ(assert_error_header_build_with_policy(&c,
+                                                  RK_408,
+                                                  "408 Request Timeout",
+                                                  /*keepalive=*/0,
+                                                  /*drain_after_headers=*/0,
+                                                  /*close_after_send=*/1),
+            0);
+  ASSERT_EQ(assert_error_header_build_with_policy(&c,
+                                                  RK_413,
+                                                  "413 Payload Too Large",
+                                                  /*keepalive=*/0,
+                                                  /*drain_after_headers=*/0,
+                                                  /*close_after_send=*/1),
+            0);
+  ASSERT_EQ(assert_error_header_build_with_policy(&c,
+                                                  RK_431,
+                                                  "431 Request Header Fields Too Large",
+                                                  /*keepalive=*/0,
+                                                  /*drain_after_headers=*/1,
+                                                  /*close_after_send=*/0),
+            0);
+  ASSERT_EQ(assert_error_header_build_with_policy(&c,
+                                                  RK_500,
+                                                  "500 Internal Server Error",
+                                                  /*keepalive=*/0,
+                                                  /*drain_after_headers=*/0,
+                                                  /*close_after_send=*/1),
+            0);
+  ASSERT_EQ(assert_error_header_build_with_policy(&c,
+                                                  RK_501,
+                                                  "501 Not Implemented",
+                                                  /*keepalive=*/0,
+                                                  /*drain_after_headers=*/0,
+                                                  /*close_after_send=*/1),
+            0);
+#if ENABLE_OVERLOAD_503
+  ASSERT_EQ(assert_error_header_build_with_policy(&c,
+                                                  RK_503,
+                                                  "503 Service Unavailable",
+                                                  /*keepalive=*/0,
+                                                  /*drain_after_headers=*/0,
+                                                  /*close_after_send=*/1),
+            0);
+#endif
   PASS();
 }
 
@@ -970,7 +1208,10 @@ SUITE(s_request_handlers) {
   RUN_TEST(t_request_dispatch_ok_options_preflight_missing_hdr_falls_back_405);
   RUN_TEST(t_request_dispatch_ok_options_no_cors_falls_back_405);
   RUN_TEST(t_request_policy_extra_headers_route_override_and_dedup);
-  RUN_TEST(t_request_policy_extra_headers_unsupported_kind_returns_none);
+  RUN_TEST(t_request_policy_extra_headers_parser_error_kinds_supported);
+  RUN_TEST(t_request_policy_extra_headers_server_error_kinds_supported);
+  RUN_TEST(t_request_policy_extra_headers_unmigrated_kind_returns_none);
+  RUN_TEST(t_error_header_build_pipeline_migrated_kinds);
   RUN_TEST(t_request_policy_extra_headers_route_disables_inherited_security);
   RUN_TEST(t_request_policy_extra_headers_overflow_returns_error);
   RUN_TEST(t_request_policy_extra_headers_null_route_list_is_safe);

@@ -292,6 +292,14 @@ void tw_process_tick(struct worker_ctx *w, uint64_t now_ms) {
                                                                           /*keepalive=*/0,
                                                                           /*drain_after_headers=*/0,
                                                                           /*close_after_send=*/1);
+          char extra_headers[1024];
+          const char *extra_headers_ptr = NULL;
+          int extra_headers_rc = request_build_policy_extra_headers(cur, plan.kind, extra_headers);
+          plan = request_policy_fail_closed_response_plan(plan, extra_headers_rc);
+          if (extra_headers_rc > 0) {
+            extra_headers_ptr = extra_headers;
+          }
+
           const char *buf = plan.response.buf;
           size_t len = plan.response.len;
           if (plan.status_line) {
@@ -306,7 +314,7 @@ void tw_process_tick(struct worker_ctx *w, uint64_t now_ms) {
                                  /*body_send_len=*/0,
                                  plan.keepalive,
                                  plan.drain_after_headers,
-                                 /*extra_headers=*/NULL,
+                                 extra_headers_ptr,
                                  &built_buf,
                                  &built_len)
                 == 0) {
