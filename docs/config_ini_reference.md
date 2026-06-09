@@ -145,7 +145,7 @@ Feature-toggle reality:
 - `cors` controls effective CORS enablement; `cors_*` fields provide parameters used when CORS is enabled.
 - CORS safety rule: `cors_allow_origin = *` cannot be combined with `cors_allow_credentials = true`.
 - `auth` by itself only enables header capture; requests become protected when `auth_basic_file` is also set.
-- `auth_basic_file` without `auth = true` logs a warning and is ignored.
+- `auth_basic_file` without `auth = true` logs a warning and is ignored, unless at least one attached route uses `auth = require`.
 - `auth_realm` is optional; the runtime default challenge realm is `Restricted`.
 - See `docs/http_capability_matrix.md` for implemented vs planned semantics.
 
@@ -159,6 +159,7 @@ The section name is only an identifier; matching is driven by `vhost` and
 |---|---|---|---|
 | `vhost` | string | required | target vhost name; validated after full parse |
 | `path_prefix` | string | required | route match prefix; must start with `/`; max 255 bytes |
+| `auth` | enum | `inherit` | route auth mode: `inherit`, `require`, or `disable`; `require` uses the vhost auth store and fails config load if unavailable; `disable` explicitly opens the matching route |
 | `inherit_security_headers` | bool | true | when false, disables inheritance of vhost typed security headers |
 | `security_headers` | bool | inherit behavior | explicit route toggle for typed security headers |
 | `security_header_set` | string (repeatable) | none | route-level typed security-header entries (`Header-Name: value`); up to 16 entries; name max 63 bytes, value max 255 bytes |
@@ -174,6 +175,10 @@ Route section behavior:
 - Required keys are `vhost` and `path_prefix`; missing or invalid required keys fail config load.
 - Route sections may appear before their referenced vhost sections.
 - Unknown route keys log warnings and are ignored.
+- Route `auth = inherit` follows the vhost auth behavior.
+- Route `auth = require` requires the owning vhost to have a valid `auth_basic_file`; it may be used on a vhost whose default `auth = false` to protect only selected routes.
+- Route `auth = disable` is an explicit auth bypass for that route, useful for health or public paths under an otherwise protected vhost.
+- CORS preflight handling runs before route auth checks. This allows browser preflight requests to succeed for protected CORS routes; the actual resource request is still subject to route auth.
 
 ## Route Matching and Precedence
 

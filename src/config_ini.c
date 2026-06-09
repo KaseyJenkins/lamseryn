@@ -334,6 +334,25 @@ static int parse_u32(const char *s, unsigned *out) {
   return 1;
 }
 
+static int parse_route_auth_mode(const char *s, enum route_auth_mode *out) {
+  if (!s || !out) {
+    return 0;
+  }
+  if (!strcasecmp(s, "inherit")) {
+    *out = ROUTE_AUTH_INHERIT;
+    return 1;
+  }
+  if (!strcasecmp(s, "require")) {
+    *out = ROUTE_AUTH_REQUIRE;
+    return 1;
+  }
+  if (!strcasecmp(s, "disable")) {
+    *out = ROUTE_AUTH_DISABLE;
+    return 1;
+  }
+  return 0;
+}
+
 static int config_find_vhost_index_by_name(const struct config_t *cfg, const char *name) {
   if (!cfg || !name || !name[0]) {
     return -1;
@@ -534,6 +553,9 @@ static int config_resolve_routes(struct config_t *cfg,
 
     if (route_has_cors_policy(rr)) {
       vhost_route_has_cors[vhost_idx] = 1u;
+    }
+    if (rr->auth_mode == ROUTE_AUTH_REQUIRE) {
+      cfg->vhosts[vhost_idx].features |= CFG_FEAT_AUTH;
     }
 
     struct cors_policy effective_cors;
@@ -1184,6 +1206,20 @@ static int on_kv(void *user, const char *section, const char *name, const char *
       rr->path_prefix_len = (uint16_t)vlen;
       return 1;
     }
+    if (!strcasecmp(name, "auth")) {
+      enum route_auth_mode mode;
+      if (!parse_route_auth_mode(value, &mode)) {
+        ini_fatal = 1;
+        snprintf(ini_err_reason,
+                 sizeof(ini_err_reason),
+                 "invalid route auth mode '%s': expected inherit, require, or disable",
+                 value ? value : "(null)");
+        LOGE(LOGC_CORE, "%s", ini_err_reason);
+        return 0;
+      }
+      rr->auth_mode = mode;
+      return 1;
+    }
     if (!strcasecmp(name, "inherit_security_headers")) {
       bool b;
       if (!parse_bool(value, &b)) {
@@ -1394,8 +1430,6 @@ static int on_kv(void *user, const char *section, const char *name, const char *
     bit = CFG_FEAT_RANGE;
   } else if (!strcasecmp(name, "conditional")) {
     bit = CFG_FEAT_CONDITIONAL;
-  } else if (!strcasecmp(name, "auth")) {
-    bit = CFG_FEAT_AUTH;
   }
 
   if (bit) {
@@ -1408,6 +1442,21 @@ static int on_kv(void *user, const char *section, const char *name, const char *
       vh->features |= bit;
     } else {
       vh->features &= ~bit;
+    }
+    return 1;
+  }
+
+  if (!strcasecmp(name, "auth")) {
+    bool b;
+    if (!parse_bool(value, &b)) {
+      LOGW(LOGC_CORE, "invalid boolean for vhost key '%s': %s", name, value ? value : "(null)");
+      return 1;
+    }
+    vh->auth_enabled = b ? 1u : 0u;
+    if (b) {
+      vh->features |= CFG_FEAT_AUTH;
+    } else {
+      vh->features &= ~CFG_FEAT_AUTH;
     }
     return 1;
   }
@@ -2025,6 +2074,28 @@ int config_load_ini(const char *path, struct config_t *cfg, char err[256]) {
           }
           goto fail;
         }
+      }
+    }
+  }
+
+  for (int i = 0; i < next->vhost_count; ++i) {
+    struct vhost_t *vh = &next->vhosts[i];
+    for (uint16_t j = 0; j < vh->route_rule_count; ++j) {
+      const struct route_policy_rule *rr = vh->route_rules[j];
+      if (!rr || rr->auth_mode != ROUTE_AUTH_REQUIRE) {
+        continue;
+      }
+      if (!vh->auth_store) {
+        if (err) {
+          snprintf(err,
+                   256,
+                   "vhost '%s': route auth=require needs auth=true and a valid auth_basic_file",
+                   vh->name);
+        }
+        LOGE(LOGC_CORE,
+             "vhost '%s': route auth=require needs auth=true and a valid auth_basic_file",
+             vh->name);
+        goto fail;
       }
     }
   }

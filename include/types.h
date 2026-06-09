@@ -116,6 +116,7 @@ struct vhost_t {
   // HTTP Basic auth. auth_store is NULL when disabled or auth_basic_file unset.
   char auth_basic_file[PATH_MAX];
   char auth_realm[64];
+  uint8_t auth_enabled;
   struct auth_store *auth_store;
 
   // Resolved route-policy rule pointers (sorted by precedence).

@@ -5,6 +5,7 @@ SERVER_BIN=${1:-build/lamseryn}
 PROTECTED_PORT=${2:-18081}
 PUBLIC_PORT=${3:-18082}
 OVERFLOW_PORT=${4:-18083}
+MIXED_PORT=${5:-18084}
 HOST=${HOST:-127.0.0.1}
 
 if [[ ! -x "$SERVER_BIN" ]]; then
@@ -49,8 +50,13 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$PROTECTED_ROOT" "$PUBLIC_ROOT"
+mkdir -p "$PROTECTED_ROOT/open" "$PROTECTED_ROOT/admin"
+mkdir -p "$PUBLIC_ROOT/admin"
 printf 'protected auth ok\n' > "$PROTECTED_ROOT/index.html"
+printf 'protected open route ok\n' > "$PROTECTED_ROOT/open/index.html"
+printf 'protected admin route ok\n' > "$PROTECTED_ROOT/admin/index.html"
 printf 'public auth bypass ok\n' > "$PUBLIC_ROOT/index.html"
+printf 'mixed admin route ok\n' > "$PUBLIC_ROOT/admin/index.html"
 
 PASS_HASH=$(openssl passwd -6 "hunter2")
 printf 'alice:%s\n' "$PASS_HASH" > "$HTPASSWD"
@@ -82,6 +88,16 @@ auth_basic_file = $HTPASSWD
 auth_realm = Admin Area
 header_set = X-Frame-Options: DENY
 
+[route protected_open]
+vhost = protected
+path_prefix = /open
+auth = disable
+
+[route protected_admin]
+vhost = protected
+path_prefix = /admin
+auth = require
+
 [vhost public]
 bind = $HOST
 port = $PUBLIC_PORT
@@ -101,6 +117,19 @@ header_set = X-Long-0: $OVERFLOW_HEADER_VALUE
 header_set = X-Long-1: $OVERFLOW_HEADER_VALUE
 header_set = X-Long-2: $OVERFLOW_HEADER_VALUE
 header_set = X-Long-3: $OVERFLOW_HEADER_VALUE
+
+[vhost mixed]
+bind = $HOST
+port = $MIXED_PORT
+docroot = $PUBLIC_ROOT
+static = true
+auth = false
+auth_basic_file = $HTPASSWD
+
+[route mixed_admin]
+vhost = mixed
+path_prefix = /admin
+auth = require
 EOF
 
 wait_for_port() {
@@ -120,9 +149,10 @@ wait_for_port() {
 request_status() {
   local port=$1
   local credentials=${2:-}
+  local path=${3:-/}
   : > "$HDR_FILE"
   : > "$BODY_FILE"
-  python3 - "$HOST" "$port" "$credentials" "$HDR_FILE" "$BODY_FILE" <<'PY'
+  python3 - "$HOST" "$port" "$credentials" "$path" "$HDR_FILE" "$BODY_FILE" <<'PY'
 import base64
 import http.client
 import sys
@@ -130,8 +160,9 @@ import sys
 host = sys.argv[1]
 port = int(sys.argv[2])
 credentials = sys.argv[3]
-headers_path = sys.argv[4]
-body_path = sys.argv[5]
+path = sys.argv[4]
+headers_path = sys.argv[5]
+body_path = sys.argv[6]
 
 headers = {}
 if credentials:
@@ -139,7 +170,7 @@ if credentials:
     headers["Authorization"] = f"Basic {token}"
 
 conn = http.client.HTTPConnection(host, port, timeout=5)
-conn.request("GET", "/", headers=headers)
+conn.request("GET", path, headers=headers)
 resp = conn.getresponse()
 body = resp.read()
 
@@ -158,7 +189,7 @@ echo "[auth-itest] starting server: $SERVER_BIN" >&2
 SERVER_CONFIG="$ITEST_INI" "$SERVER_BIN" >"$LOG_FILE" 2>&1 &
 server_pid=$!
 
-if ! wait_for_port "$PROTECTED_PORT" || ! wait_for_port "$PUBLIC_PORT" || ! wait_for_port "$OVERFLOW_PORT"; then
+if ! wait_for_port "$PROTECTED_PORT" || ! wait_for_port "$PUBLIC_PORT" || ! wait_for_port "$OVERFLOW_PORT" || ! wait_for_port "$MIXED_PORT"; then
   echo "[auth-itest] server did not start listening" >&2
   tail -n 200 "$LOG_FILE" >&2 || true
   exit 1
@@ -179,10 +210,38 @@ status=$(request_status "$PROTECTED_PORT" 'alice:hunter2')
 [[ "$status" == "200" ]]
 grep -q 'protected auth ok' "$BODY_FILE"
 
+echo "[auth-itest] protected vhost open route without credentials -> 200" >&2
+status=$(request_status "$PROTECTED_PORT" '' '/open/')
+[[ "$status" == "200" ]]
+grep -q 'protected open route ok' "$BODY_FILE"
+
+echo "[auth-itest] protected vhost required route without credentials -> 401" >&2
+status=$(request_status "$PROTECTED_PORT" '' '/admin/')
+[[ "$status" == "401" ]]
+
+echo "[auth-itest] protected vhost required route with valid credentials -> 200" >&2
+status=$(request_status "$PROTECTED_PORT" 'alice:hunter2' '/admin/')
+[[ "$status" == "200" ]]
+grep -q 'protected admin route ok' "$BODY_FILE"
+
 echo "[auth-itest] public vhost without credentials -> 200" >&2
 status=$(request_status "$PUBLIC_PORT")
 [[ "$status" == "200" ]]
 grep -q 'public auth bypass ok' "$BODY_FILE"
+
+echo "[auth-itest] mixed public vhost root without credentials -> 200" >&2
+status=$(request_status "$MIXED_PORT")
+[[ "$status" == "200" ]]
+grep -q 'public auth bypass ok' "$BODY_FILE"
+
+echo "[auth-itest] mixed public vhost required route without credentials -> 401" >&2
+status=$(request_status "$MIXED_PORT" '' '/admin/')
+[[ "$status" == "401" ]]
+
+echo "[auth-itest] mixed public vhost required route with valid credentials -> 200" >&2
+status=$(request_status "$MIXED_PORT" 'alice:hunter2' '/admin/')
+[[ "$status" == "200" ]]
+grep -q 'mixed admin route ok' "$BODY_FILE"
 
 echo "[auth-itest] protected overflow vhost without credentials -> fail-closed 500" >&2
 status=$(request_status "$OVERFLOW_PORT")

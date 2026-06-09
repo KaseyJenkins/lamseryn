@@ -111,6 +111,28 @@ struct request_response_plan request_policy_fail_closed_response_plan(
   return plan;
 }
 
+static int request_check_effective_auth(struct conn *c) {
+  if (!c || !c->vhost) {
+    return 0;
+  }
+
+  const struct vhost_t *vh = c->vhost;
+  const struct route_policy_rule *rr = policy_shared_resolve_route_rule(c, vh);
+  enum route_auth_mode mode = rr ? rr->auth_mode : ROUTE_AUTH_INHERIT;
+
+  if (mode == ROUTE_AUTH_DISABLE) {
+    return 0;
+  }
+  if (mode == ROUTE_AUTH_REQUIRE && !vh->auth_store) {
+    return -1;
+  }
+  if (mode == ROUTE_AUTH_INHERIT && !vh->auth_enabled) {
+    return 0;
+  }
+
+  return auth_basic_check(c);
+}
+
 static int request_build_cors_preflight_headers(const struct cors_policy *cors,
                                                 char out[1024]) {
   if (!cors || !out || !cors->enabled || !cors->allow_origin[0]) {
@@ -468,7 +490,7 @@ struct request_ok_dispatch request_dispatch_ok(struct conn *c,
   int static_open_err = 0;
 
   const struct vhost_t *vh = c->vhost;
-  int auth_result = auth_basic_check(c);
+  int auth_result = request_check_effective_auth(c);
   if (auth_result > 0) {
     result.kind = REQUEST_OK_TX_BUFFER;
     return result;

@@ -35,6 +35,8 @@ const size_t RESP_503_len = sizeof(RESP_503) - 1;
 static int g_static_serve_result = 0;
 static int g_static_serve_errno = 0;
 static int g_static_serve_calls = 0;
+static int g_auth_basic_check_calls = 0;
+static int g_auth_basic_check_rc = 0;
 
 static int g_tx_build_headers_calls = 0;
 static char g_tx_last_status[64];
@@ -54,11 +56,10 @@ static void reset_tx_stubs(void) {
   g_tx_last_content_len = (size_t)-1;
 }
 
-// Stub for auth_basic_check: all test vhosts have auth_store=NULL so this
-// would return 0 in the real implementation anyway.
 int auth_basic_check(struct conn *c) {
   (void)c;
-  return 0;
+  g_auth_basic_check_calls++;
+  return g_auth_basic_check_rc;
 }
 
 int static_serve_try_prepare_docroot_response(struct conn *c, int docroot_fd, int *static_open_err) {
@@ -639,6 +640,177 @@ TEST t_request_dispatch_ok_static_fallback_uses_open_errno(void) {
   PASS();
 }
 
+TEST t_request_dispatch_ok_route_auth_disable_skips_vhost_auth(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct route_policy_rule rr;
+  const struct route_policy_rule *route_rules[1];
+  struct http_ok_plan okplan;
+  char path[] = "/public/index.html";
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&rr, 0, sizeof(rr));
+  memset(&okplan, 0, sizeof(okplan));
+
+  vh.features = CFG_FEAT_STATIC;
+  vh.docroot[0] = '/';
+  vh.docroot_fd = 9;
+  vh.auth_store = (struct auth_store *)0x1;
+  snprintf(rr.path_prefix, sizeof(rr.path_prefix), "%s", "/public");
+  rr.path_prefix_len = (uint16_t)strlen(rr.path_prefix);
+  rr.auth_mode = ROUTE_AUTH_DISABLE;
+  route_rules[0] = &rr;
+  vh.route_rules = route_rules;
+  vh.route_rule_count = 1;
+  vh.route_rule_cap = 1;
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  okplan.kind = RK_OK_KA;
+  okplan.keepalive = 1;
+  okplan.close_after_send = 0;
+
+  g_auth_basic_check_calls = 0;
+  g_auth_basic_check_rc = 1;
+  g_static_serve_calls = 0;
+  g_static_serve_result = 1;
+  g_static_serve_errno = 0;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(g_auth_basic_check_calls, 0);
+  ASSERT_EQ(g_static_serve_calls, 1);
+  ASSERT_EQ(d.kind, REQUEST_OK_TX_BUFFER);
+  g_auth_basic_check_rc = 0;
+  PASS();
+}
+
+TEST t_request_dispatch_ok_route_auth_require_invokes_auth(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct route_policy_rule rr;
+  const struct route_policy_rule *route_rules[1];
+  struct http_ok_plan okplan;
+  char path[] = "/admin/index.html";
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&rr, 0, sizeof(rr));
+  memset(&okplan, 0, sizeof(okplan));
+
+  vh.auth_store = (struct auth_store *)0x1;
+  snprintf(rr.path_prefix, sizeof(rr.path_prefix), "%s", "/admin");
+  rr.path_prefix_len = (uint16_t)strlen(rr.path_prefix);
+  rr.auth_mode = ROUTE_AUTH_REQUIRE;
+  route_rules[0] = &rr;
+  vh.route_rules = route_rules;
+  vh.route_rule_count = 1;
+  vh.route_rule_cap = 1;
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  okplan.kind = RK_OK_KA;
+  okplan.keepalive = 1;
+  okplan.close_after_send = 0;
+
+  g_auth_basic_check_calls = 0;
+  g_auth_basic_check_rc = 1;
+  g_static_serve_calls = 0;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(g_auth_basic_check_calls, 1);
+  ASSERT_EQ(g_static_serve_calls, 0);
+  ASSERT_EQ(d.kind, REQUEST_OK_TX_BUFFER);
+  g_auth_basic_check_rc = 0;
+  PASS();
+}
+
+TEST t_request_dispatch_ok_route_auth_require_without_store_returns_500(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct route_policy_rule rr;
+  const struct route_policy_rule *route_rules[1];
+  struct http_ok_plan okplan;
+  char path[] = "/admin/index.html";
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&rr, 0, sizeof(rr));
+  memset(&okplan, 0, sizeof(okplan));
+
+  snprintf(rr.path_prefix, sizeof(rr.path_prefix), "%s", "/admin");
+  rr.path_prefix_len = (uint16_t)strlen(rr.path_prefix);
+  rr.auth_mode = ROUTE_AUTH_REQUIRE;
+  route_rules[0] = &rr;
+  vh.route_rules = route_rules;
+  vh.route_rule_count = 1;
+  vh.route_rule_cap = 1;
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  okplan.kind = RK_OK_KA;
+  okplan.keepalive = 1;
+  okplan.close_after_send = 0;
+
+  g_auth_basic_check_calls = 0;
+  g_auth_basic_check_rc = 0;
+  g_static_serve_calls = 0;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(g_auth_basic_check_calls, 0);
+  ASSERT_EQ(g_static_serve_calls, 0);
+  ASSERT_EQ(d.kind, REQUEST_OK_HEADER_RESPONSE);
+  ASSERT_EQ(d.response.kind, RK_500);
+  ASSERT_EQ(d.response.close_after_send, 1);
+  PASS();
+}
+
+TEST t_request_dispatch_ok_public_vhost_inherited_path_ignores_loaded_route_store(void) {
+  struct conn c;
+  struct vhost_t vh;
+  struct route_policy_rule rr;
+  const struct route_policy_rule *route_rules[1];
+  struct http_ok_plan okplan;
+  char path[] = "/index.html";
+  memset(&c, 0, sizeof(c));
+  memset(&vh, 0, sizeof(vh));
+  memset(&rr, 0, sizeof(rr));
+  memset(&okplan, 0, sizeof(okplan));
+
+  vh.features = CFG_FEAT_STATIC | CFG_FEAT_AUTH;
+  vh.docroot[0] = '/';
+  vh.docroot_fd = 9;
+  vh.auth_enabled = 0;
+  vh.auth_store = (struct auth_store *)0x1;
+  snprintf(rr.path_prefix, sizeof(rr.path_prefix), "%s", "/admin");
+  rr.path_prefix_len = (uint16_t)strlen(rr.path_prefix);
+  rr.auth_mode = ROUTE_AUTH_REQUIRE;
+  route_rules[0] = &rr;
+  vh.route_rules = route_rules;
+  vh.route_rule_count = 1;
+  vh.route_rule_cap = 1;
+  c.vhost = &vh;
+  c.h1.path_norm = path;
+  c.h1.path_norm_len = (uint16_t)(sizeof(path) - 1);
+
+  okplan.kind = RK_OK_KA;
+  okplan.keepalive = 1;
+  okplan.close_after_send = 0;
+
+  g_auth_basic_check_calls = 0;
+  g_auth_basic_check_rc = 1;
+  g_static_serve_calls = 0;
+  g_static_serve_result = 1;
+  g_static_serve_errno = 0;
+
+  struct request_ok_dispatch d = request_dispatch_ok(&c, &okplan);
+  ASSERT_EQ(g_auth_basic_check_calls, 0);
+  ASSERT_EQ(g_static_serve_calls, 1);
+  ASSERT_EQ(d.kind, REQUEST_OK_TX_BUFFER);
+  g_auth_basic_check_rc = 0;
+  PASS();
+}
+
 TEST t_request_dispatch_ok_options_preflight_route_cors_enabled(void) {
   struct conn c;
   struct vhost_t vh;
@@ -1204,6 +1376,10 @@ SUITE(s_request_handlers) {
   RUN_TEST(t_request_dispatch_ok_non_static_defaults_404);
   RUN_TEST(t_request_dispatch_ok_static_success_returns_tx_buffer);
   RUN_TEST(t_request_dispatch_ok_static_fallback_uses_open_errno);
+  RUN_TEST(t_request_dispatch_ok_route_auth_disable_skips_vhost_auth);
+  RUN_TEST(t_request_dispatch_ok_route_auth_require_invokes_auth);
+  RUN_TEST(t_request_dispatch_ok_route_auth_require_without_store_returns_500);
+  RUN_TEST(t_request_dispatch_ok_public_vhost_inherited_path_ignores_loaded_route_store);
   RUN_TEST(t_request_dispatch_ok_options_preflight_route_cors_enabled);
   RUN_TEST(t_request_dispatch_ok_options_preflight_missing_hdr_falls_back_405);
   RUN_TEST(t_request_dispatch_ok_options_no_cors_falls_back_405);

@@ -259,6 +259,7 @@ TEST t_config_ini_parses_globals_and_vhost(void) {
   ASSERT_EQ(cfg.vhosts[0].port, (uint16_t)8080);
   ASSERT_EQ(strcmp(cfg.vhosts[0].bind, "127.0.0.1"), 0);
   ASSERT_EQ(cfg.vhosts[0].max_header_fields, (uint16_t)55);
+  ASSERT_EQ(cfg.vhosts[0].auth_enabled, 1u);
   ASSERT_EQ((cfg.vhosts[0].features & CFG_FEAT_STATIC), CFG_FEAT_STATIC);
   ASSERT_EQ((cfg.vhosts[0].features & CFG_FEAT_CONDITIONAL), CFG_FEAT_CONDITIONAL);
   ASSERT_EQ((cfg.vhosts[0].features & CFG_FEAT_AUTH), CFG_FEAT_AUTH);
@@ -1301,6 +1302,138 @@ TEST t_auth_load_failure_keeps_cfg_unchanged(void) {
   PASS();
 }
 
+TEST t_route_auth_modes_parsed(void) {
+  const char *ini = "[vhost protected]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8104\n"
+                    "auth = true\n"
+                    "auth_basic_file = /tmp/users.htpasswd\n"
+                    "\n"
+                    "[route root]\n"
+                    "vhost = protected\n"
+                    "path_prefix = /\n"
+                    "auth = inherit\n"
+                    "\n"
+                    "[route admin]\n"
+                    "vhost = protected\n"
+                    "path_prefix = /admin\n"
+                    "auth = require\n"
+                    "\n"
+                    "[route health]\n"
+                    "vhost = protected\n"
+                    "path_prefix = /healthz\n"
+                    "auth = disable\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  g_auth_store_load_result = (struct auth_store *)0x1;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.route_rule_count, 3);
+  ASSERT_EQ(cfg.vhosts[0].route_rule_count, 3u);
+  ASSERT_EQ(g_auth_store_load_calls, 1u);
+
+  ASSERT_STR_EQ(cfg.vhosts[0].route_rules[0]->path_prefix, "/healthz");
+  ASSERT_EQ(cfg.vhosts[0].route_rules[0]->auth_mode, ROUTE_AUTH_DISABLE);
+
+  ASSERT_STR_EQ(cfg.vhosts[0].route_rules[1]->path_prefix, "/admin");
+  ASSERT_EQ(cfg.vhosts[0].route_rules[1]->auth_mode, ROUTE_AUTH_REQUIRE);
+
+  ASSERT_STR_EQ(cfg.vhosts[0].route_rules[2]->path_prefix, "/");
+  ASSERT_EQ(cfg.vhosts[0].route_rules[2]->auth_mode, ROUTE_AUTH_INHERIT);
+
+  free_loaded_cfg_heap(&cfg);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_auth_invalid_mode_fails(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8104\n"
+                    "\n"
+                    "[route bad]\n"
+                    "vhost = main\n"
+                    "path_prefix = /admin\n"
+                    "auth = maybe\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "invalid route auth mode") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_auth_require_without_store_fails(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8104\n"
+                    "\n"
+                    "[route admin]\n"
+                    "vhost = main\n"
+                    "path_prefix = /admin\n"
+                    "auth = require\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "auth=require") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_auth_require_on_public_vhost_loads_store_and_captures_auth(void) {
+  const char *ini = "[vhost public]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8104\n"
+                    "auth = false\n"
+                    "auth_basic_file = /tmp/users.htpasswd\n"
+                    "\n"
+                    "[route admin]\n"
+                    "vhost = public\n"
+                    "path_prefix = /admin\n"
+                    "auth = require\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  g_auth_store_load_result = (struct auth_store *)0x1;
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.vhost_count, 1);
+  ASSERT_EQ(cfg.vhosts[0].auth_enabled, 0u);
+  ASSERT_EQ((cfg.vhosts[0].features & CFG_FEAT_AUTH), CFG_FEAT_AUTH);
+  ASSERT_EQ(cfg.vhosts[0].auth_store, (struct auth_store *)0x1);
+  ASSERT_EQ(g_auth_store_load_calls, 1u);
+  ASSERT_STR_EQ(g_auth_store_load_last_path, "/tmp/users.htpasswd");
+  ASSERT_EQ(cfg.vhosts[0].route_rule_count, 1u);
+  ASSERT_EQ(cfg.vhosts[0].route_rules[0]->auth_mode, ROUTE_AUTH_REQUIRE);
+
+  free_loaded_cfg_heap(&cfg);
+
+  unlink(path);
+  PASS();
+}
+
 TEST t_cors_and_security_headers_parsed(void) {
   const char *ini = "[vhost policy]\n"
                     "bind = 127.0.0.1\n"
@@ -1802,6 +1935,10 @@ SUITE(config_ini_greatest) {
   RUN_TEST(t_auth_basic_file_ignored_when_auth_disabled);
   RUN_TEST(t_auth_basic_file_load_failure_returns_error);
   RUN_TEST(t_auth_load_failure_keeps_cfg_unchanged);
+  RUN_TEST(t_route_auth_modes_parsed);
+  RUN_TEST(t_route_auth_invalid_mode_fails);
+  RUN_TEST(t_route_auth_require_without_store_fails);
+  RUN_TEST(t_route_auth_require_on_public_vhost_loads_store_and_captures_auth);
   RUN_TEST(t_cors_and_security_headers_parsed);
   RUN_TEST(t_cors_wildcard_with_credentials_fails);
   RUN_TEST(t_route_inherited_cors_wildcard_with_credentials_fails);

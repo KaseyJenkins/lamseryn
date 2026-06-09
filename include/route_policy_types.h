@@ -9,9 +9,17 @@ enum {
   CFG_MAX_ROUTES = 256,
 };
 
+enum route_auth_mode {
+  ROUTE_AUTH_INHERIT = 0,
+  ROUTE_AUTH_REQUIRE,
+  ROUTE_AUTH_DISABLE,
+};
+
 struct route_policy_rule {
   char path_prefix[ROUTE_PATH_PREFIX_MAX];
   uint16_t path_prefix_len;
+
+  enum route_auth_mode auth_mode;
 
   uint8_t inherit_security_headers;
   uint8_t inherit_security_headers_set;
