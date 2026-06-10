@@ -20,6 +20,8 @@ struct route_policy_rule {
   uint16_t path_prefix_len;
 
   enum route_auth_mode auth_mode;
+  uint64_t max_body_bytes;
+  uint8_t max_body_bytes_set;
 
   uint8_t inherit_security_headers;
   uint8_t inherit_security_headers_set;

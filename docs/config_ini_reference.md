@@ -160,6 +160,7 @@ The section name is only an identifier; matching is driven by `vhost` and
 | `vhost` | string | required | target vhost name; validated after full parse |
 | `path_prefix` | string | required | route match prefix; must start with `/`; max 255 bytes |
 | `auth` | enum | `inherit` | route auth mode: `inherit`, `require`, or `disable`; `require` uses the vhost auth store and fails config load if unavailable; `disable` explicitly opens the matching route |
+| `max_body_bytes` | u64 | built-in default | positive route body-size limit applied after route resolution; covers `Content-Length` and decoded chunked body bytes; returns `413` when exceeded |
 | `inherit_security_headers` | bool | true | when false, disables inheritance of vhost typed security headers |
 | `security_headers` | bool | inherit behavior | explicit route toggle for typed security headers |
 | `security_header_set` | string (repeatable) | none | route-level typed security-header entries (`Header-Name: value`); up to 16 entries; name max 63 bytes, value max 255 bytes |
@@ -178,6 +179,7 @@ Route section behavior:
 - Route `auth = inherit` follows the vhost auth behavior.
 - Route `auth = require` requires the owning vhost to have a valid `auth_basic_file`; it may be used on a vhost whose default `auth = false` to protect only selected routes.
 - Route `auth = disable` is an explicit auth bypass for that route, useful for health or public paths under an otherwise protected vhost.
+- Route `max_body_bytes` applies only to body size. Header field count and header byte limits remain global/vhost-level because they are enforced before route resolution is available.
 - CORS preflight handling runs before route auth checks. This allows browser preflight requests to succeed for protected CORS routes; the actual resource request is still subject to route auth.
 
 ## Route Matching and Precedence

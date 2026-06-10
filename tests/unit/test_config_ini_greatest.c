@@ -1434,6 +1434,98 @@ TEST t_route_auth_require_on_public_vhost_loads_store_and_captures_auth(void) {
   PASS();
 }
 
+TEST t_route_max_body_bytes_parsed(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8104\n"
+                    "\n"
+                    "[route upload]\n"
+                    "vhost = main\n"
+                    "path_prefix = /upload\n"
+                    "max_body_bytes = 104857600\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.route_rule_count, 1);
+  ASSERT_EQ(cfg.vhosts[0].route_rule_count, 1u);
+  ASSERT_EQ(cfg.vhosts[0].route_rules[0]->max_body_bytes_set, 1u);
+  ASSERT_EQ(cfg.vhosts[0].route_rules[0]->max_body_bytes, (uint64_t)104857600u);
+
+  free_loaded_cfg_heap(&cfg);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_max_body_bytes_absent_inherits_default(void) {
+  const char *ini = "[vhost main]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8104\n"
+                    "\n"
+                    "[route upload]\n"
+                    "vhost = main\n"
+                    "path_prefix = /upload\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT_EQ(cfg.route_rule_count, 1);
+  ASSERT_EQ(cfg.vhosts[0].route_rules[0]->max_body_bytes_set, 0u);
+  ASSERT_EQ(cfg.vhosts[0].route_rules[0]->max_body_bytes, (uint64_t)0u);
+
+  free_loaded_cfg_heap(&cfg);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_route_max_body_bytes_invalid_values_fail(void) {
+  const char *values[] = {
+    "0",
+    "+5",
+    "nope",
+    "18446744073709551616",
+  };
+
+  for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+    char ini[512];
+    snprintf(ini,
+             sizeof(ini),
+             "[vhost main]\n"
+             "bind = 127.0.0.1\n"
+             "port = 8104\n"
+             "\n"
+             "[route upload]\n"
+             "vhost = main\n"
+             "path_prefix = /upload\n"
+             "max_body_bytes = %s\n",
+             values[i]);
+
+    char path[256];
+    ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+    struct config_t cfg;
+    char err[256];
+    ASSERT_EQ(init_cfg(&cfg), 0);
+    ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+    ASSERT(strstr(err, "invalid route max_body_bytes") != NULL);
+
+    unlink(path);
+  }
+  PASS();
+}
+
 TEST t_cors_and_security_headers_parsed(void) {
   const char *ini = "[vhost policy]\n"
                     "bind = 127.0.0.1\n"
@@ -1939,6 +2031,9 @@ SUITE(config_ini_greatest) {
   RUN_TEST(t_route_auth_invalid_mode_fails);
   RUN_TEST(t_route_auth_require_without_store_fails);
   RUN_TEST(t_route_auth_require_on_public_vhost_loads_store_and_captures_auth);
+  RUN_TEST(t_route_max_body_bytes_parsed);
+  RUN_TEST(t_route_max_body_bytes_absent_inherits_default);
+  RUN_TEST(t_route_max_body_bytes_invalid_values_fail);
   RUN_TEST(t_cors_and_security_headers_parsed);
   RUN_TEST(t_cors_wildcard_with_credentials_fails);
   RUN_TEST(t_route_inherited_cors_wildcard_with_credentials_fails);

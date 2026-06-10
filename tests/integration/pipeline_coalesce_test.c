@@ -1705,6 +1705,154 @@ static int test_body_too_large_chunked_413(const char *host, const char *port,
   return 0;
 }
 
+static int test_route_body_limit_allows_over_default(const char *host,
+                                                     const char *port,
+                                                     int nodelay,
+                                                     int timeout_ms,
+                                                     int verbose) {
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *hdr =
+      "GET /__itest/echo HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Content-Length: 33\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+  char body[33];
+  memset(body, 'a', sizeof(body));
+
+  if (send_all(fd, hdr, strlen(hdr)) < 0) {
+    close(fd);
+    die("send hdr failed: %s", strerror(errno));
+  }
+  if (send_all(fd, body, sizeof(body)) < 0) {
+    close(fd);
+    die("send body failed: %s", strerror(errno));
+  }
+
+  if (read_one_response_buffered(fd, 200, verbose) != 0) {
+    close(fd);
+    die("read failed");
+  }
+
+  close(fd);
+  info("route_body_limit_allows_over_default: OK");
+  return 0;
+}
+
+static int test_route_body_limit_keepalive_resets_to_default(const char *host,
+                                                             const char *port,
+                                                             int nodelay,
+                                                             int timeout_ms,
+                                                             int verbose) {
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *hdr1 =
+      "GET /__itest/echo HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Content-Length: 33\r\n"
+      "Connection: keep-alive\r\n"
+      "\r\n";
+  char body[33];
+  memset(body, 'a', sizeof(body));
+  const char *hdr2 =
+      "GET /index.html HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Content-Length: 33\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+
+  if (send_all(fd, hdr1, strlen(hdr1)) < 0) {
+    close(fd);
+    die("send first hdr failed: %s", strerror(errno));
+  }
+  if (send_all(fd, body, sizeof(body)) < 0) {
+    close(fd);
+    die("send first body failed: %s", strerror(errno));
+  }
+  if (read_one_response_buffered(fd, 200, verbose) != 0) {
+    close(fd);
+    die("read first response failed");
+  }
+
+  if (send_all(fd, hdr2, strlen(hdr2)) < 0) {
+    close(fd);
+    die("send second hdr failed: %s", strerror(errno));
+  }
+  if (read_one_response_buffered(fd, 413, verbose) != 0) {
+    close(fd);
+    die("read second response failed");
+  }
+
+  close(fd);
+  info("route_body_limit_keepalive_resets_to_default: OK");
+  return 0;
+}
+
+static int test_route_body_limit_rejects_content_length(const char *host,
+                                                        const char *port,
+                                                        int nodelay,
+                                                        int timeout_ms,
+                                                        int verbose) {
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *payload =
+      "GET /__itest/echo HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Content-Length: 5\r\n"
+      "Connection: close\r\n"
+      "\r\n";
+
+  if (send_all(fd, payload, strlen(payload)) < 0) {
+    close(fd);
+    die("send failed: %s", strerror(errno));
+  }
+
+  if (read_one_response_buffered(fd, 413, verbose) != 0) {
+    close(fd);
+    die("read failed");
+  }
+
+  close(fd);
+  info("route_body_limit_rejects_content_length: OK");
+  return 0;
+}
+
+static int test_route_body_limit_rejects_chunked(const char *host,
+                                                 const char *port,
+                                                 int nodelay,
+                                                 int timeout_ms,
+                                                 int verbose) {
+  g_len = 0;
+  int fd = connect_tcp(host, port, nodelay, timeout_ms);
+
+  const char *payload =
+      "GET /__itest/echo HTTP/1.1\r\n"
+      "Host: x\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+      "5\r\nhello\r\n"
+      "0\r\n\r\n";
+
+  if (send_all(fd, payload, strlen(payload)) < 0) {
+    close(fd);
+    die("send failed: %s", strerror(errno));
+  }
+
+  if (read_one_response_buffered(fd, 413, verbose) != 0) {
+    close(fd);
+    die("read failed");
+  }
+
+  close(fd);
+  info("route_body_limit_rejects_chunked: OK");
+  return 0;
+}
+
 static int test_body_timeout_408(const char *host, const char *port,
                                  int nodelay, int timeout_ms, int verbose) {
   g_len = 0;
@@ -3927,6 +4075,10 @@ static void usage(const char *prog) {
           "  te-trailers-reject [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-too-large-cl [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-too-large-chunked [-H host] [-P port] [--nodelay] [-v]\n"
+          "  route-body-limit-allows-over-default [-H host] [-P port] [--nodelay] [-v]\n"
+          "  route-body-limit-keepalive-resets [-H host] [-P port] [--nodelay] [-v]\n"
+          "  route-body-limit-rejects-cl [-H host] [-P port] [--nodelay] [-v]\n"
+          "  route-body-limit-rejects-chunked [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-timeout [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-timeout-fallback [-H host] [-P port] [--nodelay] [-v]\n"
           "  body-timeout-policy-header [-H host] [-P port] [--nodelay] [-v]\n"
@@ -4065,6 +4217,26 @@ int main(int argc, char **argv) {
   if (!strcmp(mode, "body-too-large-chunked")) {
     return test_body_too_large_chunked_413(host, port, nodelay, timeout_ms,
                                           verbose);
+  }
+
+  if (!strcmp(mode, "route-body-limit-allows-over-default")) {
+    return test_route_body_limit_allows_over_default(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "route-body-limit-keepalive-resets")) {
+    return test_route_body_limit_keepalive_resets_to_default(host,
+                                                            port,
+                                                            nodelay,
+                                                            timeout_ms,
+                                                            verbose);
+  }
+
+  if (!strcmp(mode, "route-body-limit-rejects-cl")) {
+    return test_route_body_limit_rejects_content_length(host, port, nodelay, timeout_ms, verbose);
+  }
+
+  if (!strcmp(mode, "route-body-limit-rejects-chunked")) {
+    return test_route_body_limit_rejects_chunked(host, port, nodelay, timeout_ms, verbose);
   }
 
   if (!strcmp(mode, "body-timeout")) {

@@ -334,6 +334,28 @@ static int parse_u32(const char *s, unsigned *out) {
   return 1;
 }
 
+static int parse_u64_positive(const char *s, uint64_t *out) {
+  if (!s || !out || !*s) {
+    return 0;
+  }
+  for (const char *p = s; *p; ++p) {
+    if (!isdigit((unsigned char)*p)) {
+      return 0;
+    }
+  }
+  errno = 0;
+  char *end = NULL;
+  unsigned long long v = strtoull(s, &end, 10);
+  if (end == s || errno == ERANGE || v == 0ull) {
+    return 0;
+  }
+  if (end && *end != '\0') {
+    return 0;
+  }
+  *out = (uint64_t)v;
+  return 1;
+}
+
 static int parse_route_auth_mode(const char *s, enum route_auth_mode *out) {
   if (!s || !out) {
     return 0;
@@ -1218,6 +1240,21 @@ static int on_kv(void *user, const char *section, const char *name, const char *
         return 0;
       }
       rr->auth_mode = mode;
+      return 1;
+    }
+    if (!strcasecmp(name, "max_body_bytes")) {
+      uint64_t v;
+      if (!parse_u64_positive(value, &v)) {
+        ini_fatal = 1;
+        snprintf(ini_err_reason,
+                 sizeof(ini_err_reason),
+                 "invalid route max_body_bytes '%s': expected positive u64",
+                 value ? value : "(null)");
+        LOGE(LOGC_CORE, "%s", ini_err_reason);
+        return 0;
+      }
+      rr->max_body_bytes = v;
+      rr->max_body_bytes_set = 1u;
       return 1;
     }
     if (!strcasecmp(name, "inherit_security_headers")) {

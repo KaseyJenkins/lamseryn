@@ -124,6 +124,7 @@ struct http1_state {
   size_t parser_bytes;
   uint64_t body_remaining;
   uint64_t body_bytes;
+  uint64_t max_body_bytes;
   int body_too_big;
   int pending_line_error;
 

@@ -719,6 +719,23 @@ if [[ "$ENABLE_EXTRA_ITESTS" == "1" ]]; then
   echo "[itest] running chunked body too large (expect 413)" >&2
   run_client body-too-large-chunked --nodelay
 
+  echo "[itest] running route body limit allows body over default" >&2
+  stop_server
+  start_server "" "false" "stderr" "false" \
+    "$(printf '[route echo_large]\nvhost = itest\npath_prefix = /__itest/echo\nmax_body_bytes = 64')"
+  run_client route-body-limit-allows-over-default --nodelay
+  run_client route-body-limit-keepalive-resets --nodelay
+
+  echo "[itest] running route body limit rejects Content-Length and chunked bodies" >&2
+  stop_server
+  start_server "" "false" "stderr" "false" \
+    "$(printf '[route echo_tiny]\nvhost = itest\npath_prefix = /__itest/echo\nmax_body_bytes = 4')"
+  run_client route-body-limit-rejects-cl --nodelay
+  run_client route-body-limit-rejects-chunked --nodelay
+
+  stop_server
+  start_server ""
+
   echo "[itest] running body timeout (expect 408)" >&2
   run_client body-timeout --nodelay
 

@@ -306,6 +306,7 @@ int conn_init(struct worker_ctx *w, int fd, const struct vhost_t *vhost) {
 
   uint16_t mhf = c->vhost ? c->vhost->max_header_fields : (uint16_t)100;
   c->h1.hdr_fields_max = mhf;
+  c->h1.max_body_bytes = (uint64_t)MAX_BODY_BYTES;
 
   uint64_t now = (w && w->now_cached_ms) ? w->now_cached_ms : time_now_ms_monotonic();
   conn_mark_activity(c, now);
@@ -418,6 +419,7 @@ void conn_reset_request(struct worker_ctx *w, struct conn *c) {
   c->h1.parser_bytes = 0;
   c->h1.body_remaining = 0;
   c->h1.body_bytes = 0;
+  c->h1.max_body_bytes = (uint64_t)MAX_BODY_BYTES;
   c->h1.body_too_big = 0;
   c->h1.pending_line_error = 0;
   c->rx_tail_len = 0;

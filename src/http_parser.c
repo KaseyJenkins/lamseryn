@@ -7,7 +7,27 @@
 #include "include/conn.h"
 #include "include/http_headers.h"
 #include "include/http1_limits.h"
+#include "include/policy_headers_shared.h"
 #include "include/url.h"
+
+static uint64_t h1_current_max_body_bytes(const struct conn *c) {
+  if (c && c->h1.max_body_bytes > 0) {
+    return c->h1.max_body_bytes;
+  }
+  return (uint64_t)MAX_BODY_BYTES;
+}
+
+static uint64_t h1_resolve_max_body_bytes(const struct conn *c) {
+  uint64_t limit = (uint64_t)MAX_BODY_BYTES;
+  if (!c || !c->vhost) {
+    return limit;
+  }
+  const struct route_policy_rule *rr = policy_shared_resolve_route_rule(c, c->vhost);
+  if (rr && rr->max_body_bytes_set) {
+    limit = rr->max_body_bytes;
+  }
+  return limit;
+}
 
 static int on_message_begin(llhttp_t *p) {
   UNUSED(p);
@@ -420,7 +440,7 @@ static int on_body(llhttp_t *p, const char *at, size_t length) {
     return 1;
   }
   c->h1.body_bytes += add;
-  if (c->h1.body_bytes > (uint64_t)MAX_BODY_BYTES) {
+  if (c->h1.body_bytes > h1_current_max_body_bytes(c)) {
     c->h1.body_too_big = 1;
     c->h1.want_keepalive = 0;
     return 1;
@@ -444,6 +464,7 @@ static int on_headers_complete(llhttp_t *p) {
     c->h1.unsupported_te = 0;
     c->h1.body_remaining = 0;
     c->h1.body_bytes = 0;
+    c->h1.max_body_bytes = (uint64_t)MAX_BODY_BYTES;
     c->h1.body_too_big = 0;
     c->h1.message_done = 0;
 
@@ -472,19 +493,6 @@ static int on_headers_complete(llhttp_t *p) {
         c->h1.want_keepalive = 0;
         return 0;
       }
-    }
-
-    if (c->h1.cl_count == 1) {
-      if (c->h1.cl_value > (uint64_t)MAX_BODY_BYTES) {
-        c->h1.body_too_big = 1;
-        c->h1.want_keepalive = 0;
-        return 0;
-      }
-      c->h1.body_remaining = c->h1.cl_value;
-      c->h1.message_done = (c->h1.body_remaining == 0);
-    } else {
-      c->h1.body_remaining = 0;
-      c->h1.message_done = 1;
     }
 
     c->h1.path_bad = 0;
@@ -609,6 +617,20 @@ static int on_headers_complete(llhttp_t *p) {
       c->h1.path_norm[norm_len] = 0;
     }
     c->h1.path_ends_with_slash = (uint8_t)(ends_slash ? 1 : 0);
+
+    c->h1.max_body_bytes = h1_resolve_max_body_bytes(c);
+    if (c->h1.cl_count == 1) {
+      if (c->h1.cl_value > c->h1.max_body_bytes) {
+        c->h1.body_too_big = 1;
+        c->h1.want_keepalive = 0;
+        return 0;
+      }
+      c->h1.body_remaining = c->h1.cl_value;
+      c->h1.message_done = (c->h1.body_remaining == 0);
+    } else if (c->h1.te_count == 0) {
+      c->h1.body_remaining = 0;
+      c->h1.message_done = 1;
+    }
   }
   return 0;
 }
