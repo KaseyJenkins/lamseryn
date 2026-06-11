@@ -565,6 +565,181 @@ TEST t_wake_pipe_mode_alias_rejected(void) {
   PASS();
 }
 
+TEST t_io_uring_sqpoll_globals_parsed(void) {
+  const char *ini = "[globals]\n"
+                    "io_uring_sqpoll = true\n"
+                    "io_uring_sqpoll_cpu = 3\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT((cfg.g.present & GF_IO_URING_SQPOLL) != 0);
+  ASSERT((cfg.g.present & GF_IO_URING_SQPOLL_CPU) != 0);
+  ASSERT_EQ(cfg.g.io_uring_sqpoll, (unsigned)1);
+  ASSERT_EQ(cfg.g.io_uring_sqpoll_cpu, (unsigned)3);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_io_uring_sqpoll_cpu_invalid_fails(void) {
+  const char *ini = "[globals]\n"
+                    "io_uring_sqpoll_cpu = 4294967295\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "io_uring_sqpoll_cpu") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_io_uring_sqpoll_cpu_malformed_fails(void) {
+  const char *ini = "[globals]\n"
+                    "io_uring_sqpoll_cpu = 3abc\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "io_uring_sqpoll_cpu") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_io_uring_sqpoll_cpu_signed_fails(void) {
+  const char *ini = "[globals]\n"
+                    "io_uring_sqpoll_cpu = +3\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "io_uring_sqpoll_cpu") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_tcp_defer_accept_sec_parsed(void) {
+  const char *ini = "[globals]\n"
+                    "tcp_defer_accept_sec = 0\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), 0);
+
+  ASSERT((cfg.g.present & GF_TCP_DEFER_ACCEPT_SEC) != 0);
+  ASSERT_EQ(cfg.g.tcp_defer_accept_sec, (unsigned)0);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_tcp_defer_accept_sec_malformed_fails(void) {
+  const char *ini = "[globals]\n"
+                    "tcp_defer_accept_sec = 1abc\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "tcp_defer_accept_sec") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_tcp_defer_accept_sec_signed_fails(void) {
+  const char *ini = "[globals]\n"
+                    "tcp_defer_accept_sec = -0\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "tcp_defer_accept_sec") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_tcp_defer_accept_sec_invalid_fails(void) {
+  const char *ini = "[globals]\n"
+                    "tcp_defer_accept_sec = 3601\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "tcp_defer_accept_sec") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
 TEST t_access_log_globals_parsed(void) {
   const char *ini = "[globals]\n"
                     "access_log_enabled = true\n"
@@ -1999,6 +2174,14 @@ SUITE(config_ini_greatest) {
   RUN_TEST(t_workers_invalid_fails);
   RUN_TEST(t_wake_pipe_mode_parsed);
   RUN_TEST(t_wake_pipe_mode_alias_rejected);
+  RUN_TEST(t_io_uring_sqpoll_globals_parsed);
+  RUN_TEST(t_io_uring_sqpoll_cpu_invalid_fails);
+  RUN_TEST(t_io_uring_sqpoll_cpu_malformed_fails);
+  RUN_TEST(t_io_uring_sqpoll_cpu_signed_fails);
+  RUN_TEST(t_tcp_defer_accept_sec_parsed);
+  RUN_TEST(t_tcp_defer_accept_sec_malformed_fails);
+  RUN_TEST(t_tcp_defer_accept_sec_signed_fails);
+  RUN_TEST(t_tcp_defer_accept_sec_invalid_fails);
   RUN_TEST(t_access_log_globals_parsed);
   RUN_TEST(t_access_log_sample_invalid_fails);
   RUN_TEST(t_access_log_min_status_invalid_fails);

@@ -211,7 +211,16 @@ int accept_setup_listeners(struct worker_ctx *w) {
     }
 
     const char *bind_addr = (vh->bind[0] ? vh->bind : "0.0.0.0");
-    int lfd = create_listening_socket_bind_port(bind_addr, vh->port, SOCK_STREAM, SERVER_BACKLOG);
+    int tcp_defer_accept_sec = CONFIG_TCP_DEFER_ACCEPT_SEC;
+    if (w->cfg.config->g.present & GF_TCP_DEFER_ACCEPT_SEC) {
+      tcp_defer_accept_sec = (int)w->cfg.config->g.tcp_defer_accept_sec;
+    }
+
+    int lfd = create_listening_socket_bind_port(bind_addr,
+                                                vh->port,
+                                                SOCK_STREAM,
+                                                SERVER_BACKLOG,
+                                                tcp_defer_accept_sec);
     if (lfd < 0) {
       LOGE(LOGC_ACCEPT, "listen socket failed on %s:%u", bind_addr, (unsigned)vh->port);
       accept_close_listeners(w);

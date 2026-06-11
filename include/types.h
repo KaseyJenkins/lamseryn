@@ -170,6 +170,9 @@ enum {
   GF_ACCESS_LOG_FORMAT = 1u << 25,
   GF_ACCESS_LOG_SAMPLE = 1u << 26,
   GF_ACCESS_LOG_MIN_STATUS = 1u << 27,
+  GF_IO_URING_SQPOLL = 1u << 28,
+  GF_IO_URING_SQPOLL_CPU = 1u << 29,
+  GF_TCP_DEFER_ACCEPT_SEC = 1u << 30,
 };
 
 // Runtime-global tunables parsed from INI [globals].
@@ -214,6 +217,13 @@ struct globals_cfg {
   char access_log_format[16];
   unsigned access_log_sample;
   unsigned access_log_min_status;
+
+  // io_uring setup knobs.
+  unsigned io_uring_sqpoll;
+  unsigned io_uring_sqpoll_cpu;
+
+  // Listener TCP tuning.
+  unsigned tcp_defer_accept_sec;
 };
 
 struct config_t {

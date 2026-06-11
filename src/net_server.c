@@ -58,7 +58,11 @@ static inline int is_wildcard_addr(const char *s) {
   return (strcmp(s, "0.0.0.0") == 0) || (strcmp(s, "::") == 0) || (strcmp(s, "*") == 0);
 }
 
-int create_listening_socket_bind_port(const char *bind_addr, uint16_t port, int type, int backlog) {
+int create_listening_socket_bind_port(const char *bind_addr,
+                                      uint16_t port,
+                                      int type,
+                                      int backlog,
+                                      int tcp_defer_accept_sec) {
   char service[6];
   snprintf(service, sizeof(service), "%u", (unsigned)port);
 
@@ -103,17 +107,7 @@ int create_listening_socket_bind_port(const char *bind_addr, uint16_t port, int 
     }
 #endif
 #ifdef TCP_DEFER_ACCEPT
-    int defer_sec = CONFIG_TCP_DEFER_ACCEPT_SEC;
-    const char *env_defer = getenv("TCP_DEFER_ACCEPT_SEC");
-    if (env_defer && *env_defer) {
-      char *endp = NULL;
-      long v = strtol(env_defer, &endp, 10);
-      if (endp && *endp == '\0' && v >= 0 && v <= 3600) {
-        defer_sec = (int)v;
-      } else {
-        LOGW(LOGC_ACCEPT, "Invalid TCP_DEFER_ACCEPT_SEC=%s (keeping %d)", env_defer, defer_sec);
-      }
-    }
+    int defer_sec = tcp_defer_accept_sec;
     if (defer_sec > 0) {
       if (setsockopt(sfd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &defer_sec, sizeof(defer_sec)) == -1) {
         if (errno != ENOPROTOOPT && errno != EOPNOTSUPP) {
@@ -121,6 +115,8 @@ int create_listening_socket_bind_port(const char *bind_addr, uint16_t port, int 
         }
       }
     }
+#else
+    (void)tcp_defer_accept_sec;
 #endif
 
     if (bind(sfd, rp->ai_addr, rp->ai_addrlen) == 0) {

@@ -10,6 +10,7 @@
 #include <strings.h>
 #include <stdbool.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <ctype.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -325,6 +326,28 @@ static int parse_u32(const char *s, unsigned *out) {
   char *end = NULL;
   unsigned long v = strtoul(s, &end, 10);
   if (end == s) {
+    return 0;
+  }
+  if (v > 0xfffffffful) {
+    return 0;
+  }
+  *out = (unsigned)v;
+  return 1;
+}
+
+static int parse_u32_strict(const char *s, unsigned *out) {
+  if (!s || !out || !*s) {
+    return 0;
+  }
+  for (const char *p = s; *p; ++p) {
+    if (!isdigit((unsigned char)*p)) {
+      return 0;
+    }
+  }
+  errno = 0;
+  char *end = NULL;
+  unsigned long v = strtoul(s, &end, 10);
+  if (end == s || errno == ERANGE || (end && *end != '\0')) {
     return 0;
   }
   if (v > 0xfffffffful) {
@@ -960,6 +983,44 @@ static int on_kv(void *user, const char *section, const char *name, const char *
         cfg->g.queue_depth = v;
         cfg->g.present |= GF_QUEUE_DEPTH;
       }
+      return 1;
+    }
+    if (!strcasecmp(name, "io_uring_sqpoll")) {
+      bool b;
+      if (parse_bool(value, &b)) {
+        cfg->g.io_uring_sqpoll = b ? 1u : 0u;
+        cfg->g.present |= GF_IO_URING_SQPOLL;
+      }
+      return 1;
+    }
+    if (!strcasecmp(name, "io_uring_sqpoll_cpu")) {
+      unsigned v;
+      if (!parse_u32_strict(value, &v) || v > (unsigned)INT_MAX) {
+        ini_fatal = 1;
+        snprintf(ini_err_reason,
+                 sizeof(ini_err_reason),
+                 "invalid [globals].io_uring_sqpoll_cpu: '%s' (expected 0..INT_MAX)",
+                 value ? value : "(null)");
+        LOGE(LOGC_CORE, "%s", ini_err_reason);
+        return 0;
+      }
+      cfg->g.io_uring_sqpoll_cpu = v;
+      cfg->g.present |= GF_IO_URING_SQPOLL_CPU;
+      return 1;
+    }
+    if (!strcasecmp(name, "tcp_defer_accept_sec")) {
+      unsigned v;
+      if (!parse_u32_strict(value, &v) || v > 3600u) {
+        ini_fatal = 1;
+        snprintf(ini_err_reason,
+                 sizeof(ini_err_reason),
+                 "invalid [globals].tcp_defer_accept_sec: '%s' (expected 0..3600)",
+                 value ? value : "(null)");
+        LOGE(LOGC_CORE, "%s", ini_err_reason);
+        return 0;
+      }
+      cfg->g.tcp_defer_accept_sec = v;
+      cfg->g.present |= GF_TCP_DEFER_ACCEPT_SEC;
       return 1;
     }
     if (!strcasecmp(name, "pre_accepts")) {

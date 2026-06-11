@@ -61,6 +61,9 @@ These keys are optional. If not present, runtime defaults are used.
 | `queue_depth` | u32 | computed fallback (>= `IOURING_QUEUE_DEPTH`) | See queue-depth behavior below |
 | `pre_accepts` | u32 | `CONFIG_PRE_ACCEPTS` (`1`) | initial accepts per worker |
 | `workers` | u32 (`>0`) | `2` | worker thread count (clamped to `1..128` at startup) |
+| `io_uring_sqpoll` | bool | `false` | enables `IORING_SETUP_SQPOLL`; falls back automatically if unavailable |
+| `io_uring_sqpoll_cpu` | u32 | unset | pins the SQPOLL thread when `io_uring_sqpoll = true` |
+| `tcp_defer_accept_sec` | u32 (`0..3600`) | `CONFIG_TCP_DEFER_ACCEPT_SEC` (`1`) | listener `TCP_DEFER_ACCEPT`; `0` disables it |
 | `initial_idle_timeout_ms` | u32 | `INITIAL_IDLE_TIMEOUT_MS` (`1000`) | connection idle before first request |
 | `keepalive_idle_close_ms` | u32 | `IDLE_CLOSE_MS` (`5000`) | keepalive idle timeout |
 | `header_timeout_ms` | u32 | `HEADER_TIMEOUT_MS` (`30000`) | request header deadline |
@@ -88,8 +91,7 @@ These keys are optional. If not present, runtime defaults are used.
 Queue-depth behavior:
 
 1. Use `[globals].queue_depth` if set.
-2. Else use env `QUEUE_DEPTH` if set and valid.
-3. Else compute from pre-accept heuristic with lower bound `IOURING_QUEUE_DEPTH` (`2048`).
+2. Else compute from pre-accept heuristic with lower bound `IOURING_QUEUE_DEPTH` (`2048`).
 
 Wake-pipe mode behavior:
 
@@ -232,6 +234,7 @@ Warnings (non-fatal):
 [globals]
 workers = 2
 queue_depth = 4096
+tcp_defer_accept_sec = 1
 initial_idle_timeout_ms = 5000
 header_timeout_ms = 5000
 default_max_header_fields = 100

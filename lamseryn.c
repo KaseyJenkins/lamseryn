@@ -309,22 +309,14 @@ static void cleanup_loaded_config(struct config_t *config) {
   config->route_rule_count = 0;
 }
 
-// Minimal heuristic for per-thread queue depth with INI/env precedence
+// Minimal heuristic for per-thread queue depth.
 static unsigned calc_queue_depth(const struct config_t *cfg) {
   if (cfg && cfg->g.present & GF_QUEUE_DEPTH) {
     return cfg->g.queue_depth;
   }
 
-  const char *qd_s = getenv("QUEUE_DEPTH");
-  if (qd_s && *qd_s) {
-    long v = strtol(qd_s, NULL, 10);
-    if (v > 0 && v < (1 << 20)) {
-      return (unsigned)v;
-    }
-  }
-
   unsigned pre = (cfg && cfg->g.present & GF_PRE_ACCEPTS) ? cfg->g.pre_accepts : PRE_ACCEPTS;
-    unsigned base = pre + 3 * 256 + 64;
+  unsigned base = pre + 3 * 256 + 64;
   if (base < QUEUE_DEPTH) {
     base = QUEUE_DEPTH;
   }
@@ -604,19 +596,14 @@ static void *worker_main(void *arg) {
   struct io_uring_params params;
   memset(&params, 0, sizeof(params));
 
-  const char *env_sqp = getenv("USE_SQPOLL");
-  if (env_sqp && env_sqp[0] == '1') {
+  const struct globals_cfg *globals = w->cfg.config ? &w->cfg.config->g : NULL;
+  if (globals && (globals->present & GF_IO_URING_SQPOLL) && globals->io_uring_sqpoll) {
     params.flags |= IORING_SETUP_SQPOLL;
     params.sq_thread_idle = 2000;
 
-    const char *env_cpu = getenv("USE_SQPOLL_CPU");
-    if (env_cpu && *env_cpu) {
-      char *endp = NULL;
-      long v = strtol(env_cpu, &endp, 10);
-      if (endp && *endp == '\0' && v >= 0 && v <= INT_MAX) {
-        params.flags |= IORING_SETUP_SQ_AFF;
-        params.sq_thread_cpu = (int)v;
-      }
+    if (globals->present & GF_IO_URING_SQPOLL_CPU) {
+      params.flags |= IORING_SETUP_SQ_AFF;
+      params.sq_thread_cpu = (int)globals->io_uring_sqpoll_cpu;
     }
   }
 

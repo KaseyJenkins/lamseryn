@@ -68,6 +68,7 @@ body_timeout_ms = {v("BODY_TIMEOUT_MS", 30000)}
 write_timeout_ms = {v("WRITE_TIMEOUT_MS", 10000)}
 drain_timeout_ms = {v("DRAIN_TIMEOUT_MS", 2000)}
 accept_backoff_ms = {v("ACCEPT_BACKOFF_MS", 5)}
+tcp_defer_accept_sec = 0
 
 [vhost default]
 bind = 0.0.0.0
@@ -82,8 +83,6 @@ def _start_server(server: Path, *, threads: int, log_path: Path, ini_path: Path)
     env = dict(os.environ)
     env.setdefault("LOG_LEVEL", "info")
     env.setdefault("LOG_CATS", "core,accept,timer,http,io")
-    # Keep accept() immediate so INITIAL_IDLE timing remains deterministic.
-    env.setdefault("TCP_DEFER_ACCEPT_SEC", "0")
     env["SERVER_CONFIG"] = str(ini_path)
 
     # Route server stdout/stderr into one file for parsing.
