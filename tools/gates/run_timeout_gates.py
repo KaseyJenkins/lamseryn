@@ -20,26 +20,10 @@ def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None 
     return subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env, check=False, text=True, capture_output=True)
 
 
-def _build(repo: Path, profile_name: str, profiles_path: Path) -> Path:
-    profile = get_profile(profiles_path, profile_name)
-
-    # Apply build-time knobs from profile values.
-    defs = []
-    for k in (
-        "INITIAL_IDLE_TIMEOUT_MS",
-        "HEADER_TIMEOUT_MS",
-        "BODY_TIMEOUT_MS",
-        "IDLE_CLOSE_MS",
-        "WRITE_TIMEOUT_MS",
-        "ACCEPT_BACKOFF_MS",
-    ):
-        if k in profile.values:
-            defs.append(f"-D{k}={profile.values[k]}")
-
+def _build(repo: Path) -> Path:
     make = os.environ.get("MAKE", "make")
-    # Pass APP_DEFS via environment to avoid argv/whitespace parsing issues.
     env = dict(os.environ)
-    env["APP_DEFS"] = " ".join(defs)
+    env["APP_DEFS"] = ""
     cmd = [make, "gates"]
     p = _run(cmd, cwd=repo, env=env)
     if p.returncode != 0:
@@ -61,13 +45,13 @@ def _write_ini(profile, port: int, workers: int, docroot_dir: Path, ini_path: Pa
 log_level = info
 log_categories = core,accept,timer,http,io
 workers = {workers}
-initial_idle_timeout_ms = {v("INITIAL_IDLE_TIMEOUT_MS", 1000)}
-keepalive_idle_close_ms = {v("IDLE_CLOSE_MS", 5000)}
-header_timeout_ms = {v("HEADER_TIMEOUT_MS", 30000)}
-body_timeout_ms = {v("BODY_TIMEOUT_MS", 30000)}
-write_timeout_ms = {v("WRITE_TIMEOUT_MS", 10000)}
-drain_timeout_ms = {v("DRAIN_TIMEOUT_MS", 2000)}
-accept_backoff_ms = {v("ACCEPT_BACKOFF_MS", 5)}
+initial_idle_timeout_ms = {v("initial_idle_timeout_ms", 1000)}
+keepalive_idle_close_ms = {v("keepalive_idle_close_ms", 5000)}
+header_timeout_ms = {v("header_timeout_ms", 30000)}
+body_timeout_ms = {v("body_timeout_ms", 30000)}
+write_timeout_ms = {v("write_timeout_ms", 10000)}
+drain_timeout_ms = {v("drain_timeout_ms", 2000)}
+accept_backoff_ms = {v("accept_backoff_ms", 5)}
 tcp_defer_accept_sec = 0
 
 [vhost default]
@@ -151,7 +135,7 @@ def main() -> int:
 
     profile = get_profile(profiles_path, args.profile)
 
-    server = _build(repo, args.profile, profiles_path)
+    server = _build(repo)
     if not server.exists():
         raise SystemExit(f"server binary not found: {server}")
 
@@ -180,7 +164,7 @@ def main() -> int:
         p, logf = _start_server(server, threads=args.threads, log_path=log_path, ini_path=ini_path)
         try:
             # Gate 1: initial idle.
-            wait_ms = int(profile.values.get("INITIAL_IDLE_TIMEOUT_MS", 1000)) + 500
+            wait_ms = int(profile.values.get("initial_idle_timeout_ms", 1000)) + 500
             c1 = _run([
                 sys.executable,
                 str(repo / "tools/gates/clients/initial_idle.py"),
@@ -190,7 +174,7 @@ def main() -> int:
             ])
 
             # Gate 2: keep-alive idle.
-            idle_ms = int(profile.values.get("IDLE_CLOSE_MS", 5000))
+            idle_ms = int(profile.values.get("keepalive_idle_close_ms", 5000))
             cka = _run([
                 sys.executable,
                 str(repo / "tools/gates/clients/keepalive_idle.py"),
@@ -209,7 +193,7 @@ def main() -> int:
             ])
 
             # Gate 4: slow reader/write-side backpressure (assert RST delivery).
-            write_ms = int(profile.values.get("WRITE_TIMEOUT_MS", 10000))
+            write_ms = int(profile.values.get("write_timeout_ms", 10000))
             c3 = _run([
                 sys.executable,
                 str(repo / "tools/gates/clients/slow_reader_probe.py"),
@@ -273,7 +257,7 @@ def main() -> int:
             if not (lo <= rst_ms <= hi):
                 print(
                     f"FAIL: RST after {rst_ms} ms outside expected window [{lo}, {hi}] "
-                    f"(WRITE_TIMEOUT_MS={write_ms})",
+                    f"(write_timeout_ms={write_ms})",
                     file=sys.stderr,
                 )
                 return 1

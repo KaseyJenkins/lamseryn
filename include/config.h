@@ -1,13 +1,23 @@
 #pragma once
 
 // Centralized server configuration defaults.
-// Override via compile-time defines or runtime configuration parsing.
+// Runtime policy defaults here are internal fallbacks used when INI keys are absent.
 
 #define SERVER_DEFAULT_PORT 8080
 #define SERVER_BACKLOG 1024
 #define IOURING_QUEUE_DEPTH 2048
 #define READ_BUFFER_SIZE 8192
 #define WRITE_BUFFER_SIZE 8192
+
+enum {
+	DEFAULT_INITIAL_IDLE_TIMEOUT_MS = 1000u,
+	DEFAULT_KEEPALIVE_IDLE_CLOSE_MS = 5000u,
+	DEFAULT_HEADER_TIMEOUT_MS = 30000u,
+	DEFAULT_BODY_TIMEOUT_MS = 30000u,
+	DEFAULT_WRITE_TIMEOUT_MS = 10000u,
+	DEFAULT_DRAIN_TIMEOUT_MS = 2000u,
+	DEFAULT_ACCEPT_BACKOFF_MS = 5u,
+};
 
 // Socket buffer tuning (per-connection kernel memory clamps).
 #define CONFIG_SOCK_SND_BUF (32 * 1024)

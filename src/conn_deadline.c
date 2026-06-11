@@ -30,7 +30,7 @@ void conn_start_draining(struct worker_ctx *w, struct conn *c, uint64_t now_ms) 
     return;
   }
   c->dl.draining = 1;
-  unsigned drain_ms = DRAIN_TIMEOUT_MS;
+  unsigned drain_ms = DEFAULT_DRAIN_TIMEOUT_MS;
   if (w && w->cfg.config && w->cfg.config->g.present & GF_DRAIN_TIMEOUT) {
     drain_ms = w->cfg.config->g.drain_timeout_ms;
   }

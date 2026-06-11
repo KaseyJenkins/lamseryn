@@ -6,6 +6,7 @@
 #include "instrumentation/instrumentation.h"
 #include "instrumentation/counters_update.h"
 #include "request_handlers.h"
+#include "include/config.h"
 #include "include/logger.h"
 #include "include/macros.h"
 #include "include/types.h"
@@ -107,16 +108,16 @@ static inline uint64_t tw_compute_conn_deadline(struct worker_ctx *w,
   const struct globals_cfg *g = cfg ? &cfg->g : NULL;
 
   unsigned keepalive_idle_ms =
-    (g && (g->present & GF_KA_IDLE_CLOSE)) ? g->keepalive_idle_close_ms : IDLE_CLOSE_MS;
+    (g && (g->present & GF_KA_IDLE_CLOSE)) ? g->keepalive_idle_close_ms : DEFAULT_KEEPALIVE_IDLE_CLOSE_MS;
   unsigned initial_idle_ms = (g && (g->present & GF_INITIAL_IDLE_TIMEOUT))
                                ? g->initial_idle_timeout_ms
-                               : INITIAL_IDLE_TIMEOUT_MS;
+                               : DEFAULT_INITIAL_IDLE_TIMEOUT_MS;
   unsigned header_to_ms =
-    (g && (g->present & GF_HEADER_TIMEOUT)) ? g->header_timeout_ms : HEADER_TIMEOUT_MS;
+    (g && (g->present & GF_HEADER_TIMEOUT)) ? g->header_timeout_ms : DEFAULT_HEADER_TIMEOUT_MS;
   unsigned body_to_ms =
-    (g && (g->present & GF_BODY_TIMEOUT)) ? g->body_timeout_ms : BODY_TIMEOUT_MS;
+    (g && (g->present & GF_BODY_TIMEOUT)) ? g->body_timeout_ms : DEFAULT_BODY_TIMEOUT_MS;
   unsigned write_to_ms =
-    (g && (g->present & GF_WRITE_TIMEOUT)) ? g->write_timeout_ms : WRITE_TIMEOUT_MS;
+    (g && (g->present & GF_WRITE_TIMEOUT)) ? g->write_timeout_ms : DEFAULT_WRITE_TIMEOUT_MS;
 
   enum tw_conn_state st = tw_conn_get_state(c);
   switch (st) {

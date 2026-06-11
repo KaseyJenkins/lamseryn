@@ -47,7 +47,7 @@ static inline int accept_arm_backoff_timer(struct worker_ctx *w) {
 
   accept_backoff_init_op(w);
 
-  unsigned backoff_ms = ACCEPT_BACKOFF_MS;
+  unsigned backoff_ms = DEFAULT_ACCEPT_BACKOFF_MS;
   if (w->cfg.config && w->cfg.config->g.present & GF_ACCEPT_BACKOFF_MS) {
     backoff_ms = w->cfg.config->g.accept_backoff_ms;
   }

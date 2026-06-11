@@ -22,7 +22,7 @@ def _recv_exact(s: socket.socket, n: int, *, deadline: float) -> bytes:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Keep-alive idle gate: read full response, then expect server close after IDLE_CLOSE_MS")
+    ap = argparse.ArgumentParser(description="Keep-alive idle gate: read full response, then expect server close after keepalive_idle_close_ms")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--idle-ms", type=int, required=True, help="How long to wait for server-side keepalive idle close")

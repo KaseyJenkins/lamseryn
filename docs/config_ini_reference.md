@@ -59,18 +59,18 @@ These keys are optional. If not present, runtime defaults are used.
 | `log_level` | enum | runtime logger default | `error`, `warn`, `info`, `debug`, `trace` |
 | `log_categories` | csv enum | runtime logger default | tokens: `all`, `core`, `accept`, `io`, `http`, `buf`, `timer`, `poll` |
 | `queue_depth` | u32 | computed fallback (>= `IOURING_QUEUE_DEPTH`) | See queue-depth behavior below |
-| `pre_accepts` | u32 | `CONFIG_PRE_ACCEPTS` (`1`) | initial accepts per worker |
+| `pre_accepts` | u32 | `1` | initial accepts per worker |
 | `workers` | u32 (`>0`) | `2` | worker thread count (clamped to `1..128` at startup) |
 | `io_uring_sqpoll` | bool | `false` | enables `IORING_SETUP_SQPOLL`; falls back automatically if unavailable |
 | `io_uring_sqpoll_cpu` | u32 | unset | pins the SQPOLL thread when `io_uring_sqpoll = true` |
-| `tcp_defer_accept_sec` | u32 (`0..3600`) | `CONFIG_TCP_DEFER_ACCEPT_SEC` (`1`) | listener `TCP_DEFER_ACCEPT`; `0` disables it |
-| `initial_idle_timeout_ms` | u32 | `INITIAL_IDLE_TIMEOUT_MS` (`1000`) | connection idle before first request |
-| `keepalive_idle_close_ms` | u32 | `IDLE_CLOSE_MS` (`5000`) | keepalive idle timeout |
-| `header_timeout_ms` | u32 | `HEADER_TIMEOUT_MS` (`30000`) | request header deadline |
-| `body_timeout_ms` | u32 | `BODY_TIMEOUT_MS` (`30000`) | request body deadline |
-| `write_timeout_ms` | u32 | `WRITE_TIMEOUT_MS` (`10000`) | response write deadline |
-| `drain_timeout_ms` | u32 | `DRAIN_TIMEOUT_MS` (`2000`) | post-error drain window |
-| `accept_backoff_ms` | u32 | `ACCEPT_BACKOFF_MS` (`5`) | EMFILE/ENFILE backoff |
+| `tcp_defer_accept_sec` | u32 (`0..3600`) | `1` | listener `TCP_DEFER_ACCEPT`; `0` disables it |
+| `initial_idle_timeout_ms` | u32 | `1000` | connection idle before first request |
+| `keepalive_idle_close_ms` | u32 | `5000` | keepalive idle timeout |
+| `header_timeout_ms` | u32 | `30000` | request header deadline |
+| `body_timeout_ms` | u32 | `30000` | request body deadline |
+| `write_timeout_ms` | u32 | `10000` | response write deadline |
+| `drain_timeout_ms` | u32 | `2000` | post-error drain window |
+| `accept_backoff_ms` | u32 | `5` | EMFILE/ENFILE backoff |
 | `shutdown_grace_ms` | u32 (`>0`) | `5000` | global graceful-shutdown bound for first-signal drain and force-timeout fallback |
 | `wake_pipe_mode` | enum | `shared` | wake signaling topology: `shared` (lower FD usage) or `per-worker` |
 | `access_log_enabled` | bool | `false` | enables per-request access-log emission |

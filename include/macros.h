@@ -29,46 +29,19 @@ _Static_assert((alignof(max_align_t) & UD_TAG_BIT) == 0,
 #error "No thread-local storage keyword available for this compiler."
 #endif
 
-// Shared caps and timeouts.
-// Intentionally overridable via build flags (-DNAME=value).
+// Shared caps and timing internals.
+// Some structural constants remain intentionally overridable via build flags.
 #ifndef HEADER_CAP
 #define HEADER_CAP (64 * 1024) // 64 KB
-#endif
-
-#ifndef INITIAL_IDLE_TIMEOUT_MS
-#define INITIAL_IDLE_TIMEOUT_MS 1000
 #endif
 
 #ifndef SWEEP_PERIOD_MS
 #define SWEEP_PERIOD_MS 1000
 #endif
 
-#ifndef IDLE_CLOSE_MS
-#define IDLE_CLOSE_MS 5000
-#endif
-
-#ifndef HEADER_TIMEOUT_MS
-#define HEADER_TIMEOUT_MS 30000
-#endif
-
-// Accept backoff after EMFILE/ENFILE (override via -D).
-#ifndef ACCEPT_BACKOFF_MS
-#define ACCEPT_BACKOFF_MS 5
-#endif
-
 // Request body limits and slow-client defense (override via -D).
 #ifndef MAX_BODY_BYTES
 #define MAX_BODY_BYTES (1ull * 1024 * 1024) // 1 MiB
-#endif
-
-#ifndef BODY_TIMEOUT_MS
-#define BODY_TIMEOUT_MS 30000
-#endif
-
-// Response write-side timeout/backpressure (override via -D).
-// Applies to in-flight header/body sends and sendfile streaming.
-#ifndef WRITE_TIMEOUT_MS
-#define WRITE_TIMEOUT_MS 10000
 #endif
 
 // Timing-wheel defaults (override via -D).
@@ -87,9 +60,6 @@ _Static_assert((alignof(max_align_t) & UD_TAG_BIT) == 0,
 // CQE batching and drain thresholds.
 #ifndef CQE_BATCH
 #define CQE_BATCH 64
-#endif
-#ifndef DRAIN_TIMEOUT_MS
-#define DRAIN_TIMEOUT_MS 2000
 #endif
 #ifndef SUBMIT_BATCH_SZ
 #define SUBMIT_BATCH_SZ 64

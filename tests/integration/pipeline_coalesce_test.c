@@ -1858,8 +1858,8 @@ static int test_body_timeout_408(const char *host, const char *port,
   g_len = 0;
   int fd = connect_tcp(host, port, nodelay, timeout_ms);
 
-  // Send headers + partial body, then stall long enough to trip BODY_TIMEOUT_MS.
-  // In `make itest` we build the server with BODY_TIMEOUT_MS=200.
+  // Send headers + partial body, then stall long enough to trip body_timeout_ms.
+  // The integration INI sets body_timeout_ms=200.
   const char *hdr =
       "GET / HTTP/1.1\r\n"
       "Host: x\r\n"

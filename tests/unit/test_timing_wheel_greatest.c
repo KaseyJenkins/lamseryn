@@ -78,7 +78,7 @@ TEST t_ka_idle_deadline(void) {
   c->dl.last_active_ms = 2000;
   tw_reschedule(&w, c, 2000);
   ASSERT_EQ(c->dl.deadline_kind, DK_KA_IDLE);
-  ASSERT_EQ(c->dl.deadline_ms, c->dl.last_active_ms + IDLE_CLOSE_MS);
+  ASSERT_EQ(c->dl.deadline_ms, c->dl.last_active_ms + DEFAULT_KEEPALIVE_IDLE_CLOSE_MS);
   ASSERT_EQ(c->dl.deadline_active, 1);
   free(c);
   PASS();
@@ -94,7 +94,7 @@ TEST t_initial_idle_deadline(void) {
   c->dl.last_active_ms = 3000;
   tw_reschedule(&w, c, 3000);
   ASSERT_EQ(c->dl.deadline_kind, DK_INITIAL_IDLE);
-  ASSERT_EQ(c->dl.deadline_ms, c->dl.last_active_ms + INITIAL_IDLE_TIMEOUT_MS);
+  ASSERT_EQ(c->dl.deadline_ms, c->dl.last_active_ms + DEFAULT_INITIAL_IDLE_TIMEOUT_MS);
   free(c);
   PASS();
 }
@@ -109,7 +109,7 @@ TEST t_header_in_progress_deadline(void) {
   c->dl.header_start_ms = 4000;
   tw_reschedule(&w, c, 4100);
   ASSERT_EQ(c->dl.deadline_kind, DK_HEADER_TIMEOUT);
-  ASSERT_EQ(c->dl.deadline_ms, c->dl.header_start_ms + HEADER_TIMEOUT_MS);
+  ASSERT_EQ(c->dl.deadline_ms, c->dl.header_start_ms + DEFAULT_HEADER_TIMEOUT_MS);
   free(c);
   PASS();
 }
@@ -123,7 +123,7 @@ TEST t_body_in_progress_deadline(void) {
   c->dl.last_active_ms = 7000;
   tw_reschedule(&w, c, 7000);
   ASSERT_EQ(c->dl.deadline_kind, DK_BODY_TIMEOUT);
-  ASSERT_EQ(c->dl.deadline_ms, c->dl.last_active_ms + BODY_TIMEOUT_MS);
+  ASSERT_EQ(c->dl.deadline_ms, c->dl.last_active_ms + DEFAULT_BODY_TIMEOUT_MS);
   free(c);
   PASS();
 }
@@ -144,7 +144,7 @@ TEST t_write_in_progress_deadline(void) {
 
   tw_reschedule(&w, c, 8000);
   ASSERT_EQ(c->dl.deadline_kind, DK_WRITE_TIMEOUT);
-  ASSERT_EQ(c->dl.deadline_ms, c->dl.write_start_ms + WRITE_TIMEOUT_MS);
+  ASSERT_EQ(c->dl.deadline_ms, c->dl.write_start_ms + DEFAULT_WRITE_TIMEOUT_MS);
   free(c);
   PASS();
 }
@@ -181,14 +181,14 @@ TEST t_process_tick_expires_ka_idle_closes(void) {
   c->dl.last_active_ms = 0;
 
   // Arm such that deadline == now, placing it in the current slot.
-  tw_reschedule(&w, c, IDLE_CLOSE_MS);
+  tw_reschedule(&w, c, DEFAULT_KEEPALIVE_IDLE_CLOSE_MS);
   ASSERT_EQ(c->dl.deadline_kind, DK_KA_IDLE);
   ASSERT_EQ((int)c->dl.deadline_active, 1);
 
   g_close_calls = 0;
   g_close_last_fd = -1;
 
-  tw_process_tick(&w, IDLE_CLOSE_MS);
+  tw_process_tick(&w, DEFAULT_KEEPALIVE_IDLE_CLOSE_MS);
 
   ASSERT_EQ(g_close_calls, 1);
   ASSERT_EQ(g_close_last_fd, 6);
@@ -243,14 +243,14 @@ TEST t_process_tick_header_timeout_stages_408_send(void) {
   c->dl.header_start_ms = 0;
 
   // Arm such that deadline == now, placing it in the current slot.
-  tw_reschedule(&w, c, HEADER_TIMEOUT_MS);
+  tw_reschedule(&w, c, DEFAULT_HEADER_TIMEOUT_MS);
   ASSERT_EQ(c->dl.deadline_kind, DK_HEADER_TIMEOUT);
   ASSERT_EQ((int)c->dl.deadline_active, 1);
 
   g_close_calls = 0;
   g_close_last_fd = -1;
 
-  tw_process_tick(&w, HEADER_TIMEOUT_MS);
+  tw_process_tick(&w, DEFAULT_HEADER_TIMEOUT_MS);
 
   ASSERT_EQ(g_close_calls, 0);
   ASSERT_EQ(c->tx.resp_kind, RK_408);
@@ -303,14 +303,14 @@ TEST t_process_tick_header_timeout_policy_overflow_fail_closes_500(void) {
   c->h1.parser_bytes = 1;
   c->dl.header_start_ms = 0;
 
-  tw_reschedule(&w, c, HEADER_TIMEOUT_MS);
+  tw_reschedule(&w, c, DEFAULT_HEADER_TIMEOUT_MS);
   ASSERT_EQ(c->dl.deadline_kind, DK_HEADER_TIMEOUT);
   ASSERT_EQ((int)c->dl.deadline_active, 1);
 
   g_close_calls = 0;
   g_close_last_fd = -1;
 
-  tw_process_tick(&w, HEADER_TIMEOUT_MS);
+  tw_process_tick(&w, DEFAULT_HEADER_TIMEOUT_MS);
 
   ASSERT_EQ(g_close_calls, 0);
   ASSERT_EQ(c->tx.resp_kind, RK_500);
@@ -341,13 +341,13 @@ TEST t_process_tick_header_timeout_tx_build_fail_falls_back_static_408(void) {
   c->h1.parser_bytes = 1;
   c->dl.header_start_ms = 0;
 
-  tw_reschedule(&w, c, HEADER_TIMEOUT_MS);
+  tw_reschedule(&w, c, DEFAULT_HEADER_TIMEOUT_MS);
   ASSERT_EQ(c->dl.deadline_kind, DK_HEADER_TIMEOUT);
   ASSERT_EQ((int)c->dl.deadline_active, 1);
 
   int set_rc = setenv("TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS", "408", 1);
   if (set_rc == 0) {
-    tw_process_tick(&w, HEADER_TIMEOUT_MS);
+    tw_process_tick(&w, DEFAULT_HEADER_TIMEOUT_MS);
   }
   int unset_rc = unsetenv("TX_TEST_FORCE_HEADER_BUILD_FAIL_STATUS");
 
@@ -375,7 +375,7 @@ TEST t_process_tick_reinserts_not_yet_expired_deadline(void) {
   c->h1.parser_bytes = 0;
   c->dl.last_active_ms = 1000;
 
-  uint64_t deadline_ms = c->dl.last_active_ms + IDLE_CLOSE_MS;
+  uint64_t deadline_ms = c->dl.last_active_ms + DEFAULT_KEEPALIVE_IDLE_CLOSE_MS;
   uint64_t now_ms = deadline_ms - 1; // not yet expired, but in current tick slot
 
   tw_reschedule(&w, c, now_ms);

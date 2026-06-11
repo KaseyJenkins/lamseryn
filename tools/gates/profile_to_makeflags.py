@@ -16,14 +16,8 @@ def main() -> int:
 
     p = get_profile(Path(args.profiles), args.profile)
 
-    # Only emit flags that are currently wired as build-time macros.
+    # Only emit true compile-time gates profile knobs.
     allowlist = (
-        "INITIAL_IDLE_TIMEOUT_MS",
-        "HEADER_TIMEOUT_MS",
-        "BODY_TIMEOUT_MS",
-        "IDLE_CLOSE_MS",
-        "WRITE_TIMEOUT_MS",
-        "ACCEPT_BACKOFF_MS",
         "MAX_BODY_BYTES",
         "TW_TICK_MS",
         "TW_SLOTS",
