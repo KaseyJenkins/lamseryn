@@ -122,6 +122,7 @@ struct http1_state {
   int unsupported_te;
   int want_keepalive;
   size_t parser_bytes;
+  size_t max_header_bytes;
   uint64_t body_remaining;
   uint64_t body_bytes;
   uint64_t max_body_bytes;

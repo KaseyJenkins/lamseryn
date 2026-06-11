@@ -234,7 +234,10 @@ TEST t_config_ini_parses_globals_and_vhost(void) {
                     "log_categories = core,io\n"
                     "queue_depth = 4096\n"
                     "pre_accepts = 32\n"
+                    "listen_backlog = 2048\n"
                     "default_max_header_fields = 77\n"
+                    "default_max_body_bytes = 123456\n"
+                    "max_header_bytes = 8192\n"
                     "\n"
                     "[vhost main]\n"
                     "bind = 127.0.0.1\n"
@@ -270,10 +273,16 @@ TEST t_config_ini_parses_globals_and_vhost(void) {
   ASSERT((cfg.g.present & GF_LOG_CATEGORIES) != 0);
   ASSERT((cfg.g.present & GF_QUEUE_DEPTH) != 0);
   ASSERT((cfg.g.present & GF_PRE_ACCEPTS) != 0);
+  ASSERT((cfg.g.present & GF_LISTEN_BACKLOG) != 0);
   ASSERT((cfg.g.present & GF_DEFAULT_MAX_HDR_FIELDS) != 0);
+  ASSERT((cfg.g.present & GF_DEFAULT_MAX_BODY_BYTES) != 0);
+  ASSERT((cfg.g.present & GF_MAX_HEADER_BYTES) != 0);
   ASSERT_EQ(cfg.g.queue_depth, (unsigned)4096);
   ASSERT_EQ(cfg.g.pre_accepts, (unsigned)32);
+  ASSERT_EQ(cfg.g.listen_backlog, (unsigned)2048);
   ASSERT_EQ(cfg.g.default_max_header_fields, (unsigned)77);
+  ASSERT_EQ(cfg.g.default_max_body_bytes, (uint64_t)123456u);
+  ASSERT_EQ(cfg.g.max_header_bytes, (unsigned)8192);
 
   unlink(path);
   PASS();
@@ -515,6 +524,69 @@ TEST t_workers_invalid_fails(void) {
   ASSERT_EQ(init_cfg(&cfg), 0);
   ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
   ASSERT(strstr(err, "workers") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_listen_backlog_invalid_fails(void) {
+  const char *ini = "[globals]\n"
+                    "listen_backlog = 0\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "listen_backlog") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_default_max_body_bytes_invalid_fails(void) {
+  const char *ini = "[globals]\n"
+                    "default_max_body_bytes = 0\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "default_max_body_bytes") != NULL);
+
+  unlink(path);
+  PASS();
+}
+
+TEST t_max_header_bytes_invalid_fails(void) {
+  const char *ini = "[globals]\n"
+                    "max_header_bytes = +8192\n"
+                    "\n"
+                    "[vhost a]\n"
+                    "bind = 127.0.0.1\n"
+                    "port = 8085\n";
+
+  char path[256];
+  ASSERT_EQ(write_temp_ini(ini, path), 0);
+
+  struct config_t cfg;
+  char err[256];
+  ASSERT_EQ(init_cfg(&cfg), 0);
+  ASSERT_EQ(config_load_ini(path, &cfg, err), -1);
+  ASSERT(strstr(err, "max_header_bytes") != NULL);
 
   unlink(path);
   PASS();
@@ -2172,6 +2244,9 @@ SUITE(config_ini_greatest) {
   RUN_TEST(t_shutdown_grace_ms_invalid_fails);
   RUN_TEST(t_workers_parsed);
   RUN_TEST(t_workers_invalid_fails);
+  RUN_TEST(t_listen_backlog_invalid_fails);
+  RUN_TEST(t_default_max_body_bytes_invalid_fails);
+  RUN_TEST(t_max_header_bytes_invalid_fails);
   RUN_TEST(t_wake_pipe_mode_parsed);
   RUN_TEST(t_wake_pipe_mode_alias_rejected);
   RUN_TEST(t_io_uring_sqpoll_globals_parsed);

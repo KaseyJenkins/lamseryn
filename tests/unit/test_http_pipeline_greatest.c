@@ -4,6 +4,7 @@
 
 #include "include/http_pipeline.h"
 #include "include/conn.h"
+#include "include/config.h"
 #include "include/http_parser.h"
 #include <llhttp.h>
 #include <string.h>
@@ -68,6 +69,7 @@ static void init_conn_parser(struct conn *c) {
                               on_message_complete);
   http_parser_init(&c->h1.parser, &g_settings);
   c->h1.parser.data = c;
+  c->h1.max_header_bytes = (size_t)DEFAULT_MAX_HEADER_BYTES;
 }
 
 // Existing baseline
@@ -92,10 +94,10 @@ TEST t_exactly_at_cap_is_ok(void) {
   const char *reqline = "GET / HTTP/1.1\r\n";
   (void)http_pipeline_feed(&c, reqline, strlen(reqline));
 
-  // Next chunk lands exactly on HEADER_CAP.
+  // Next chunk lands exactly on max_header_bytes.
   const size_t n = 6; // "X: y\r\n"
-  ASSERT(HEADER_CAP > n);
-  c.h1.parser_bytes = HEADER_CAP - n;
+  ASSERT(c.h1.max_header_bytes > n);
+  c.h1.parser_bytes = c.h1.max_header_bytes - n;
 
   struct http_pipeline_result r = http_pipeline_feed(&c, "X: y\r\n", n);
 
@@ -184,7 +186,7 @@ TEST t_invalid_token_same_chunk_with_lf_is_tolerated_once(void) {
   PASS();
 }
 
-// multi-chunk header growth to exceed HEADER_CAP → 431
+// multi-chunk header growth to exceed max_header_bytes -> 431
 TEST t_header_cap_431_multi_chunks(void) {
   struct conn c;
   init_conn_parser(&c);
@@ -192,10 +194,10 @@ TEST t_header_cap_431_multi_chunks(void) {
   const char *reqline = "GET / HTTP/1.1\r\n";
   (void)http_pipeline_feed(&c, reqline, strlen(reqline));
 
-  // Position so that the next small chunk pushes us over HEADER_CAP.
+  // Position so that the next small chunk pushes us over max_header_bytes.
   size_t bump = 16;
-  ASSERT(HEADER_CAP > bump);
-  c.h1.parser_bytes = HEADER_CAP - 1;
+  ASSERT(c.h1.max_header_bytes > bump);
+  c.h1.parser_bytes = c.h1.max_header_bytes - 1;
   char buf[16];
   memset(buf, 'A', sizeof(buf));
 
@@ -252,9 +254,9 @@ TEST t_cap_minus_one_then_one_is_ok(void) {
   const char *reqline = "GET / HTTP/1.1\r\n";
   (void)http_pipeline_feed(&c, reqline, strlen(reqline));
 
-  // Land at HEADER_CAP - 1, then feed 1 byte to reach exactly CAP (OK)
-  ASSERT(HEADER_CAP > 1);
-  c.h1.parser_bytes = HEADER_CAP - 1;
+  // Land at max_header_bytes - 1, then feed 1 byte to reach exactly the cap (OK)
+  ASSERT(c.h1.max_header_bytes > 1);
+  c.h1.parser_bytes = c.h1.max_header_bytes - 1;
 
   char one = 'A';
   struct http_pipeline_result r = http_pipeline_feed(&c, &one, 1);
@@ -271,7 +273,7 @@ TEST t_cap_plus_one_is_431(void) {
   (void)http_pipeline_feed(&c, reqline, strlen(reqline));
 
   // Exactly at CAP, then feed 1 → should flip 431 immediately
-  c.h1.parser_bytes = HEADER_CAP;
+  c.h1.parser_bytes = c.h1.max_header_bytes;
   char one = 'A';
   struct http_pipeline_result r = http_pipeline_feed(&c, &one, 1);
   ASSERT_EQ(c.h1.header_too_big, 1);

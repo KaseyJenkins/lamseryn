@@ -159,6 +159,7 @@ initial_idle_timeout_ms = 5000
 keepalive_idle_close_ms = 10000
 header_timeout_ms = 5000
 body_timeout_ms = 200
+default_max_body_bytes = 32
 write_timeout_ms = 10000
 drain_timeout_ms = 200
 accept_backoff_ms = 10

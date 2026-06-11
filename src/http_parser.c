@@ -14,11 +14,11 @@ static uint64_t h1_current_max_body_bytes(const struct conn *c) {
   if (c && c->h1.max_body_bytes > 0) {
     return c->h1.max_body_bytes;
   }
-  return (uint64_t)MAX_BODY_BYTES;
+  return (uint64_t)DEFAULT_MAX_BODY_BYTES;
 }
 
 static uint64_t h1_resolve_max_body_bytes(const struct conn *c) {
-  uint64_t limit = (uint64_t)MAX_BODY_BYTES;
+  uint64_t limit = h1_current_max_body_bytes(c);
   if (!c || !c->vhost) {
     return limit;
   }
@@ -464,7 +464,7 @@ static int on_headers_complete(llhttp_t *p) {
     c->h1.unsupported_te = 0;
     c->h1.body_remaining = 0;
     c->h1.body_bytes = 0;
-    c->h1.max_body_bytes = (uint64_t)MAX_BODY_BYTES;
+    c->h1.max_body_bytes = h1_current_max_body_bytes(c);
     c->h1.body_too_big = 0;
     c->h1.message_done = 0;
 

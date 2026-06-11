@@ -1046,6 +1046,21 @@ static int on_kv(void *user, const char *section, const char *name, const char *
       cfg->g.present |= GF_WORKERS;
       return 1;
     }
+    if (!strcasecmp(name, "listen_backlog")) {
+      unsigned v;
+      if (!parse_u32_strict(value, &v) || v == 0u || v > (unsigned)INT_MAX) {
+        ini_fatal = 1;
+        snprintf(ini_err_reason,
+                 sizeof(ini_err_reason),
+                 "invalid [globals].listen_backlog: '%s' (expected 1..INT_MAX)",
+                 value ? value : "(null)");
+        LOGE(LOGC_CORE, "%s", ini_err_reason);
+        return 0;
+      }
+      cfg->g.listen_backlog = v;
+      cfg->g.present |= GF_LISTEN_BACKLOG;
+      return 1;
+    }
     if (!strcasecmp(name, "initial_idle_timeout_ms")) {
       unsigned v;
       if (parse_u32(value, &v)) {
@@ -1123,6 +1138,36 @@ static int on_kv(void *user, const char *section, const char *name, const char *
         cfg->g.default_max_header_fields = v;
         cfg->g.present |= GF_DEFAULT_MAX_HDR_FIELDS;
       }
+      return 1;
+    }
+    if (!strcasecmp(name, "default_max_body_bytes")) {
+      uint64_t v;
+      if (!parse_u64_positive(value, &v)) {
+        ini_fatal = 1;
+        snprintf(ini_err_reason,
+                 sizeof(ini_err_reason),
+                 "invalid [globals].default_max_body_bytes: '%s' (expected positive u64)",
+                 value ? value : "(null)");
+        LOGE(LOGC_CORE, "%s", ini_err_reason);
+        return 0;
+      }
+      cfg->g.default_max_body_bytes = v;
+      cfg->g.present |= GF_DEFAULT_MAX_BODY_BYTES;
+      return 1;
+    }
+    if (!strcasecmp(name, "max_header_bytes")) {
+      unsigned v;
+      if (!parse_u32_strict(value, &v) || v == 0u) {
+        ini_fatal = 1;
+        snprintf(ini_err_reason,
+                 sizeof(ini_err_reason),
+                 "invalid [globals].max_header_bytes: '%s' (expected u32 > 0)",
+                 value ? value : "(null)");
+        LOGE(LOGC_CORE, "%s", ini_err_reason);
+        return 0;
+      }
+      cfg->g.max_header_bytes = v;
+      cfg->g.present |= GF_MAX_HEADER_BYTES;
       return 1;
     }
     if (!strcasecmp(name, "tls")) {

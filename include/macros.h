@@ -31,17 +31,8 @@ _Static_assert((alignof(max_align_t) & UD_TAG_BIT) == 0,
 
 // Shared caps and timing internals.
 // Some structural constants remain intentionally overridable via build flags.
-#ifndef HEADER_CAP
-#define HEADER_CAP (64 * 1024) // 64 KB
-#endif
-
 #ifndef SWEEP_PERIOD_MS
 #define SWEEP_PERIOD_MS 1000
-#endif
-
-// Request body limits and slow-client defense (override via -D).
-#ifndef MAX_BODY_BYTES
-#define MAX_BODY_BYTES (1ull * 1024 * 1024) // 1 MiB
 #endif
 
 // Timing-wheel defaults (override via -D).

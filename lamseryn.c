@@ -69,11 +69,6 @@
 #include "include/itest_echo.h"
 #include "include/version.h"
 
-#define DEFAULT_PORT SERVER_DEFAULT_PORT
-#define BACKLOG SERVER_BACKLOG
-#define QUEUE_DEPTH IOURING_QUEUE_DEPTH
-#define PRE_ACCEPTS CONFIG_PRE_ACCEPTS
-
 #ifndef ENABLE_SOCK_SNDBUF
 #define ENABLE_SOCK_SNDBUF 0
 #endif
@@ -86,11 +81,6 @@
 #ifndef ENABLE_TCP_NOTSENT_LOWAT
 #define ENABLE_TCP_NOTSENT_LOWAT 0
 #endif
-
-#define SOCK_SND_BUF CONFIG_SOCK_SND_BUF
-#define SOCK_RCV_BUF CONFIG_SOCK_RCV_BUF
-
-#define TCP_NOTSENT_LOWAT_VAL CONFIG_TCP_NOTSENT_LOWAT
 
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_tls_reload_requested = 0;
@@ -315,10 +305,10 @@ static unsigned calc_queue_depth(const struct config_t *cfg) {
     return cfg->g.queue_depth;
   }
 
-  unsigned pre = (cfg && cfg->g.present & GF_PRE_ACCEPTS) ? cfg->g.pre_accepts : PRE_ACCEPTS;
+  unsigned pre = (cfg && cfg->g.present & GF_PRE_ACCEPTS) ? cfg->g.pre_accepts : DEFAULT_PRE_ACCEPTS;
   unsigned base = pre + 3 * 256 + 64;
-  if (base < QUEUE_DEPTH) {
-    base = QUEUE_DEPTH;
+  if (base < DEFAULT_IOURING_QUEUE_DEPTH) {
+    base = DEFAULT_IOURING_QUEUE_DEPTH;
   }
   return base;
 }

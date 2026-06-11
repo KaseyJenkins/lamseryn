@@ -18,7 +18,6 @@ def main() -> int:
 
     # Only emit true compile-time gates profile knobs.
     allowlist = (
-        "MAX_BODY_BYTES",
         "TW_TICK_MS",
         "TW_SLOTS",
     )

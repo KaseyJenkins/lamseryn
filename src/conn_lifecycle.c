@@ -37,6 +37,22 @@
 
 static uint64_t g_active_conns_global = 0;
 
+static uint64_t conn_default_max_body_bytes(const struct worker_ctx *w) {
+  const struct globals_cfg *g = (w && w->cfg.config) ? &w->cfg.config->g : NULL;
+  if (g && (g->present & GF_DEFAULT_MAX_BODY_BYTES)) {
+    return g->default_max_body_bytes;
+  }
+  return (uint64_t)DEFAULT_MAX_BODY_BYTES;
+}
+
+static size_t conn_default_max_header_bytes(const struct worker_ctx *w) {
+  const struct globals_cfg *g = (w && w->cfg.config) ? &w->cfg.config->g : NULL;
+  if (g && (g->present & GF_MAX_HEADER_BYTES)) {
+    return (size_t)g->max_header_bytes;
+  }
+  return (size_t)DEFAULT_MAX_HEADER_BYTES;
+}
+
 uint64_t active_conns_inc(void) {
   return __atomic_add_fetch(&g_active_conns_global, 1, __ATOMIC_SEQ_CST);
 }
@@ -306,7 +322,8 @@ int conn_init(struct worker_ctx *w, int fd, const struct vhost_t *vhost) {
 
   uint16_t mhf = c->vhost ? c->vhost->max_header_fields : (uint16_t)100;
   c->h1.hdr_fields_max = mhf;
-  c->h1.max_body_bytes = (uint64_t)MAX_BODY_BYTES;
+  c->h1.max_header_bytes = conn_default_max_header_bytes(w);
+  c->h1.max_body_bytes = conn_default_max_body_bytes(w);
 
   uint64_t now = (w && w->now_cached_ms) ? w->now_cached_ms : time_now_ms_monotonic();
   conn_mark_activity(c, now);
@@ -417,9 +434,10 @@ void conn_reset_request(struct worker_ctx *w, struct conn *c) {
   http_parser_init(&c->h1.parser, &w->http_settings);
   c->h1.parser.data = c;
   c->h1.parser_bytes = 0;
+  c->h1.max_header_bytes = conn_default_max_header_bytes(w);
   c->h1.body_remaining = 0;
   c->h1.body_bytes = 0;
-  c->h1.max_body_bytes = (uint64_t)MAX_BODY_BYTES;
+  c->h1.max_body_bytes = conn_default_max_body_bytes(w);
   c->h1.body_too_big = 0;
   c->h1.pending_line_error = 0;
   c->rx_tail_len = 0;

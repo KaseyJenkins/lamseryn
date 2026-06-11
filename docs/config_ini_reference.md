@@ -58,9 +58,10 @@ These keys are optional. If not present, runtime defaults are used.
 |---|---|---|---|
 | `log_level` | enum | runtime logger default | `error`, `warn`, `info`, `debug`, `trace` |
 | `log_categories` | csv enum | runtime logger default | tokens: `all`, `core`, `accept`, `io`, `http`, `buf`, `timer`, `poll` |
-| `queue_depth` | u32 | computed fallback (>= `IOURING_QUEUE_DEPTH`) | See queue-depth behavior below |
+| `queue_depth` | u32 | computed fallback (>= `2048`) | See queue-depth behavior below |
 | `pre_accepts` | u32 | `1` | initial accepts per worker |
 | `workers` | u32 (`>0`) | `2` | worker thread count (clamped to `1..128` at startup) |
+| `listen_backlog` | u32 (`>0`) | `1024` | listen backlog passed to `listen(2)` for each bound listener |
 | `io_uring_sqpoll` | bool | `false` | enables `IORING_SETUP_SQPOLL`; falls back automatically if unavailable |
 | `io_uring_sqpoll_cpu` | u32 | unset | pins the SQPOLL thread when `io_uring_sqpoll = true` |
 | `tcp_defer_accept_sec` | u32 (`0..3600`) | `1` | listener `TCP_DEFER_ACCEPT`; `0` disables it |
@@ -79,6 +80,8 @@ These keys are optional. If not present, runtime defaults are used.
 | `access_log_sample` | u32 (`>0`) | `1` | 1/N sampling factor |
 | `access_log_min_status` | u32 (`100..599`) | `100` | status threshold for emit/filter |
 | `default_max_header_fields` | u32 (`<=65535`) | `100` | applied when creating vhosts that do not set `max_header_fields` |
+| `max_header_bytes` | u32 (`>0`) | `65536` | request header byte cap enforced before route resolution |
+| `default_max_body_bytes` | u64 (`>0`) | `1048576` | default request body cap; route `max_body_bytes` can override |
 | `tls` | bool | disabled unless vhost/global enables | global default for vhosts |
 | `tls_cert_file` | string | empty | global fallback for TLS vhosts |
 | `tls_key_file` | string | empty | global fallback for TLS vhosts |
@@ -91,7 +94,7 @@ These keys are optional. If not present, runtime defaults are used.
 Queue-depth behavior:
 
 1. Use `[globals].queue_depth` if set.
-2. Else compute from pre-accept heuristic with lower bound `IOURING_QUEUE_DEPTH` (`2048`).
+2. Else compute from pre-accept heuristic with lower bound `2048`.
 
 Wake-pipe mode behavior:
 
@@ -162,7 +165,7 @@ The section name is only an identifier; matching is driven by `vhost` and
 | `vhost` | string | required | target vhost name; validated after full parse |
 | `path_prefix` | string | required | route match prefix; must start with `/`; max 255 bytes |
 | `auth` | enum | `inherit` | route auth mode: `inherit`, `require`, or `disable`; `require` uses the vhost auth store and fails config load if unavailable; `disable` explicitly opens the matching route |
-| `max_body_bytes` | u64 | built-in default | positive route body-size limit applied after route resolution; covers `Content-Length` and decoded chunked body bytes; returns `413` when exceeded |
+| `max_body_bytes` | u64 | `default_max_body_bytes` | positive route body-size limit applied after route resolution; covers `Content-Length` and decoded chunked body bytes; returns `413` when exceeded |
 | `inherit_security_headers` | bool | true | when false, disables inheritance of vhost typed security headers |
 | `security_headers` | bool | inherit behavior | explicit route toggle for typed security headers |
 | `security_header_set` | string (repeatable) | none | route-level typed security-header entries (`Header-Name: value`); up to 16 entries; name max 63 bytes, value max 255 bytes |
@@ -238,6 +241,8 @@ tcp_defer_accept_sec = 1
 initial_idle_timeout_ms = 5000
 header_timeout_ms = 5000
 default_max_header_fields = 100
+max_header_bytes = 65536
+default_max_body_bytes = 1048576
 
 [vhost default]
 bind = 0.0.0.0

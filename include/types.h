@@ -172,12 +172,15 @@ enum {
   GF_ACCESS_LOG_MIN_STATUS = 1u << 27,
   GF_IO_URING_SQPOLL = 1u << 28,
   GF_IO_URING_SQPOLL_CPU = 1u << 29,
-  GF_TCP_DEFER_ACCEPT_SEC = 1u << 30,
+  GF_TCP_DEFER_ACCEPT_SEC = 1ull << 30,
+  GF_DEFAULT_MAX_BODY_BYTES = 1ull << 31,
+  GF_MAX_HEADER_BYTES = 1ull << 32,
+  GF_LISTEN_BACKLOG = 1ull << 33,
 };
 
 // Runtime-global tunables parsed from INI [globals].
 struct globals_cfg {
-  uint32_t present; // Bitmask of GF_*.
+  uint64_t present; // Bitmask of GF_*.
 
   int log_level; // LOG_ERROR..LOG_TRACE.
   unsigned log_categories; // Bitmask (LOGC_*).
@@ -185,6 +188,7 @@ struct globals_cfg {
   unsigned queue_depth; // Ring depth.
   unsigned pre_accepts; // Initial accepts per worker.
   unsigned workers; // Worker thread count.
+  unsigned listen_backlog;
 
   unsigned initial_idle_timeout_ms;
   unsigned keepalive_idle_close_ms; // Keep-alive idle close timeout.
@@ -197,6 +201,8 @@ struct globals_cfg {
   unsigned shutdown_grace_ms;
 
   unsigned default_max_header_fields; // Optional global default for vhosts.
+  uint64_t default_max_body_bytes;
+  unsigned max_header_bytes;
 
   // Optional global TLS defaults consumed by vhosts.
   unsigned tls_enabled;

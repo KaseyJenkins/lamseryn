@@ -1633,7 +1633,7 @@ static int test_body_too_large_cl_413(const char *host, const char *port,
   g_len = 0;
   int fd = connect_tcp(host, port, nodelay, timeout_ms);
 
-  // Send larger than MAX_BODY_BYTES (default is 1 MiB).
+  // Send larger than the default body cap (1 MiB).
   const char *payload =
       "GET / HTTP/1.1\r\n"
       "Host: x\r\n"
@@ -1663,8 +1663,8 @@ static int test_body_too_large_chunked_413(const char *host, const char *port,
   int fd = connect_tcp(host, port, nodelay, timeout_ms);
 
   // Expect: server counts decoded body bytes for chunked and enforces
-  // MAX_BODY_BYTES. In `make itest` we build the server with MAX_BODY_BYTES=32,
-  // so a 33-byte chunk should be rejected.
+  // default_max_body_bytes. The integration INI sets it to 32, so a 33-byte
+  // chunk should be rejected.
   const char *hdr =
       "GET / HTTP/1.1\r\n"
       "Host: x\r\n"
@@ -2259,7 +2259,7 @@ static int test_path_dot_segments_normalize_not_400(const char *host,
 static int test_too_many_headers_431(const char *host, const char *port,
                                     int nodelay, int timeout_ms, int verbose) {
   // Exceed default LimitRequestFields-style header field cap (default 100).
-  // Keep header bytes small to ensure we hit the *field count* limit, not HEADER_CAP.
+  // Keep header bytes small to ensure we hit the field count limit, not max_header_bytes.
   int fd = connect_tcp(host, port, nodelay, timeout_ms);
 
   const int extra = 110;

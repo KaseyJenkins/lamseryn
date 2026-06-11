@@ -3,6 +3,7 @@
 #include <llhttp.h>
 
 #include "include/macros.h"
+#include "include/config.h"
 #include "include/conn.h"
 #include "http_parser.h"
 #include "include/http_pipeline.h"
@@ -16,6 +17,13 @@ static inline int has_lf(const char *buf, size_t n) {
     }
   }
   return 0;
+}
+
+static inline size_t h1_max_header_bytes(const struct conn *c) {
+  if (c && c->h1.max_header_bytes > 0) {
+    return c->h1.max_header_bytes;
+  }
+  return (size_t)DEFAULT_MAX_HEADER_BYTES;
 }
 
 // Decide whether to tolerate an llhttp error during header parsing.
@@ -181,7 +189,7 @@ struct http_pipeline_result http_pipeline_feed(struct conn *c, const char *buf, 
   if (!c->h1.parse_error && !c->h1.header_too_big && !c->h1.unsupported_te && !c->h1.message_done) {
     if (!c->h1.headers_done) {
       c->h1.parser_bytes += n;
-      if (c->h1.parser_bytes > HEADER_CAP) {
+      if (c->h1.parser_bytes > h1_max_header_bytes(c)) {
         c->h1.header_too_big = 1;
         r.header_too_big_transition = !had_header_too_big;
       }
@@ -222,7 +230,7 @@ void http_pipeline_log_transitions(const struct conn *c,
 
   if (hres->header_too_big_transition) {
     const char *reason = c->h1.header_fields_too_many ? "fields" : "bytes";
-    size_t cap = c->h1.header_fields_too_many ? (size_t)c->h1.hdr_fields_max : (size_t)HEADER_CAP;
+    size_t cap = c->h1.header_fields_too_many ? (size_t)c->h1.hdr_fields_max : h1_max_header_bytes(c);
     size_t parsed =
       c->h1.header_fields_too_many ? (size_t)c->h1.hdr_fields_count : c->h1.parser_bytes;
     LOGW(LOGC_HTTP,

@@ -158,7 +158,7 @@ int accept_arm_startup(struct worker_ctx *w) {
       mark_post(w);
     }
 #else
-    unsigned pre_accepts = CONFIG_PRE_ACCEPTS;
+    unsigned pre_accepts = DEFAULT_PRE_ACCEPTS;
     if (w->cfg.config && (w->cfg.config->g.present & GF_PRE_ACCEPTS)) {
       pre_accepts = w->cfg.config->g.pre_accepts;
     }
@@ -211,15 +211,19 @@ int accept_setup_listeners(struct worker_ctx *w) {
     }
 
     const char *bind_addr = (vh->bind[0] ? vh->bind : "0.0.0.0");
-    int tcp_defer_accept_sec = CONFIG_TCP_DEFER_ACCEPT_SEC;
+    int tcp_defer_accept_sec = (int)DEFAULT_TCP_DEFER_ACCEPT_SEC;
     if (w->cfg.config->g.present & GF_TCP_DEFER_ACCEPT_SEC) {
       tcp_defer_accept_sec = (int)w->cfg.config->g.tcp_defer_accept_sec;
+    }
+    int listen_backlog = (int)DEFAULT_LISTEN_BACKLOG;
+    if (w->cfg.config->g.present & GF_LISTEN_BACKLOG) {
+      listen_backlog = (int)w->cfg.config->g.listen_backlog;
     }
 
     int lfd = create_listening_socket_bind_port(bind_addr,
                                                 vh->port,
                                                 SOCK_STREAM,
-                                                SERVER_BACKLOG,
+                                                listen_backlog,
                                                 tcp_defer_accept_sec);
     if (lfd < 0) {
       LOGE(LOGC_ACCEPT, "listen socket failed on %s:%u", bind_addr, (unsigned)vh->port);

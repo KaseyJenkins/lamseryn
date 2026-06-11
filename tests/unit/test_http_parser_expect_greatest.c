@@ -3,6 +3,7 @@
 #include "../vendor/greatest.h"
 
 #include "include/conn.h"
+#include "include/config.h"
 #include "include/http_pipeline.h"
 #include "http_parser.h"
 
@@ -14,7 +15,7 @@ static void init_conn_parser(struct conn *c) {
   memset(c, 0, sizeof(*c));
   req_arena_init(&c->h1.arena);
   c->h1.hdr_fields_max = 100;
-  c->h1.max_body_bytes = (uint64_t)MAX_BODY_BYTES;
+  c->h1.max_body_bytes = (uint64_t)DEFAULT_MAX_BODY_BYTES;
 
   http_parser_settings_assign_server(&g_settings);
   http_parser_init(&c->h1.parser, &g_settings);
@@ -151,7 +152,7 @@ TEST t_route_max_body_bytes_allows_content_length_over_default(void) {
   struct route_policy_rule rr;
   const struct route_policy_rule *route_rules[1];
   init_conn_parser(&c);
-  attach_route_with_body_limit(&c, &vh, &rr, route_rules, "/upload", (uint64_t)MAX_BODY_BYTES + 1u);
+  attach_route_with_body_limit(&c, &vh, &rr, route_rules, "/upload", (uint64_t)DEFAULT_MAX_BODY_BYTES + 1u);
 
   const char *hdrs = "GET /upload HTTP/1.1\r\n"
                      "Host: x\r\n"
@@ -161,8 +162,8 @@ TEST t_route_max_body_bytes_allows_content_length_over_default(void) {
   struct http_pipeline_result r = http_pipeline_feed(&c, hdrs, strlen(hdrs));
   ASSERT_EQ(c.h1.parse_error, 0);
   ASSERT_EQ(c.h1.body_too_big, 0);
-  ASSERT_EQ(c.h1.max_body_bytes, (uint64_t)MAX_BODY_BYTES + 1u);
-  ASSERT_EQ(c.h1.body_remaining, (uint64_t)MAX_BODY_BYTES + 1u);
+  ASSERT_EQ(c.h1.max_body_bytes, (uint64_t)DEFAULT_MAX_BODY_BYTES + 1u);
+  ASSERT_EQ(c.h1.body_remaining, (uint64_t)DEFAULT_MAX_BODY_BYTES + 1u);
   ASSERT_EQ(c.h1.message_done, 0);
   ASSERT_EQ(r.action, HP_ACTION_CONTINUE);
 
@@ -199,7 +200,7 @@ TEST t_route_max_body_bytes_nonmatch_uses_default(void) {
   struct route_policy_rule rr;
   const struct route_policy_rule *route_rules[1];
   init_conn_parser(&c);
-  attach_route_with_body_limit(&c, &vh, &rr, route_rules, "/upload", (uint64_t)MAX_BODY_BYTES + 1u);
+  attach_route_with_body_limit(&c, &vh, &rr, route_rules, "/upload", (uint64_t)DEFAULT_MAX_BODY_BYTES + 1u);
 
   const char *hdrs = "GET /other HTTP/1.1\r\n"
                      "Host: x\r\n"
@@ -208,7 +209,7 @@ TEST t_route_max_body_bytes_nonmatch_uses_default(void) {
 
   struct http_pipeline_result r = http_pipeline_feed(&c, hdrs, strlen(hdrs));
   ASSERT_EQ(c.h1.body_too_big, 1);
-  ASSERT_EQ(c.h1.max_body_bytes, (uint64_t)MAX_BODY_BYTES);
+  ASSERT_EQ(c.h1.max_body_bytes, (uint64_t)DEFAULT_MAX_BODY_BYTES);
   ASSERT_EQ(r.action, HP_ACTION_RESP_413);
 
   destroy_conn_parser(&c);
