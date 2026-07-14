@@ -28,6 +28,7 @@
 #include "include/worker_loop.h"
 #include "include/accept_controller.h"
 #include "include/conn_close.h"
+#include "include/tx.h"
 
 #include "instrumentation/counters_update.h"
 
@@ -112,6 +113,7 @@ struct conn *conn_alloc(void) {
     conn_free_list = c->free_next;
     conn_free_count--;
     memset(c, 0, sizeof(*c));
+    tx_init(&c->tx);
 #if CONN_FREELIST_STATS
     conn_alloc_hits++;
 #endif
@@ -120,7 +122,11 @@ struct conn *conn_alloc(void) {
 #if CONN_FREELIST_STATS
   conn_alloc_misses++;
 #endif
-  return (struct conn *)calloc(1, sizeof(struct conn));
+  c = (struct conn *)calloc(1, sizeof(struct conn));
+  if (c) {
+    tx_init(&c->tx);
+  }
+  return c;
 }
 
 void conn_recycle(struct conn *c) {
@@ -138,10 +144,7 @@ void conn_recycle(struct conn *c) {
     c->rx_stash_len = 0;
   }
 
-  if (c->tx.dyn_buf) {
-    free(c->tx.dyn_buf);
-    c->tx.dyn_buf = NULL;
-  }
+  tx_reset(&c->tx);
 
   req_arena_destroy(&c->h1.arena);
   c->h1.target = NULL;
@@ -211,22 +214,6 @@ void conn_freelist_drain(void) {
     conn_free_list = next;
   }
   conn_free_count = 0;
-}
-
-// ---------------------------------------------------------------------------
-// TX file state cleanup
-// ---------------------------------------------------------------------------
-
-void tx_close_file(struct conn *c) {
-  if (!c) {
-    return;
-  }
-  if (c->tx.file_fd >= 0) {
-    close(c->tx.file_fd);
-    c->tx.file_fd = -1;
-  }
-  c->tx.file_off = 0;
-  c->tx.file_rem = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,9 +342,7 @@ int conn_init(struct worker_ctx *w, int fd, const struct vhost_t *vhost) {
     }
   }
 
-  c->tx.file_fd = -1;
-  c->tx.file_off = 0;
-  c->tx.file_rem = 0;
+  tx_init(&c->tx);
 
   if (w) {
     c->generation = ++w->next_conn_generation;
@@ -448,25 +433,7 @@ void conn_reset_request(struct worker_ctx *w, struct conn *c) {
 
   c->noselect_streak = 0;
 
-  if (c->tx.file_fd >= 0) {
-    close(c->tx.file_fd);
-    c->tx.file_fd = -1;
-    c->tx.file_off = 0;
-    c->tx.file_rem = 0;
-  }
-  if (c->tx.dyn_buf) {
-    free(c->tx.dyn_buf);
-    c->tx.dyn_buf = NULL;
-  }
-  c->tx.write_buf = NULL;
-  c->tx.write_len = 0;
-  c->tx.write_off = 0;
-  c->tx.content_length_hint = 0;
-  c->tx.resp_kind = RK_NONE;
-  c->tx.keepalive = 0;
-  c->tx.drain_after_headers = 0;
-  c->tx.write_poll_armed = 0;
-  c->tx.recv_armed = 0;
+  tx_reset(&c->tx);
   conn_clear_draining(c);
 
   c->op_read.c = c;
@@ -495,7 +462,7 @@ int schedule_or_sync_close(struct worker_ctx *w, int fd) {
   tw_cancel(w, c);
   conn_mark_closing(c);
 
-  tx_close_file(c);
+  tx_close_attached_file(&c->tx);
   if (c->tls_enabled) {
     (void)tls_conn_shutdown(c);
   }

@@ -26,10 +26,6 @@ void conn_put(struct conn *c);
 int conn_init(struct worker_ctx *w, int fd, const struct vhost_t *vhost);
 void conn_reset_request(struct worker_ctx *w, struct conn *c);
 
-// --- TX file state cleanup ---
-
-void tx_close_file(struct conn *c);
-
 // --- Active-set bookkeeping ---
 
 void worker_active_add(struct worker_ctx *w, int fd);

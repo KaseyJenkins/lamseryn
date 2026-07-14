@@ -1,7 +1,7 @@
 // Unit tests for src/conn_lifecycle.c
 //
 // Covers: atomic conn counters, freelist alloc/recycle/drain,
-//         refcount transitions (conn_ref/conn_put), tx_close_file,
+//         refcount transitions (conn_ref/conn_put),
 //         and conn_freelist_log_stats smoke.
 //
 // Heavy-weight functions (conn_init, conn_reset_request,
@@ -84,6 +84,7 @@ TEST t_alloc_from_empty_returns_zeroed(void) {
   ASSERT(c != NULL);
   ASSERT_EQ(c->fd, 0);       // calloc zeroes everything
   ASSERT_EQ(c->refcnt, 0);
+  ASSERT_EQ(c->tx.file_fd, -1);
   free(c);
   PASS();
 }
@@ -103,6 +104,7 @@ TEST t_recycle_then_alloc_reuses(void) {
   ASSERT(c2 == c);
   // memset(0) happens inside conn_alloc on freelist hit.
   ASSERT_EQ(c2->fd, 0);
+  ASSERT_EQ(c2->tx.file_fd, -1);
   free(c2);
   PASS();
 }
@@ -114,6 +116,7 @@ TEST t_drain_empties_freelist(void) {
   for (int i = 0; i < 3; ++i) {
     struct conn *c = (struct conn *)calloc(1, sizeof(*c));
     c->fd = -1;
+    tx_init(&c->tx);
     conn_recycle(c);
   }
 
@@ -127,10 +130,36 @@ TEST t_drain_empties_freelist(void) {
   PASS();
 }
 
+TEST t_recycle_resets_tx_resources(void) {
+  conn_freelist_drain();
+
+  int pipefd[2];
+  ASSERT_EQ(pipe(pipefd), 0);
+
+  struct conn *c = conn_alloc();
+  ASSERT(c != NULL);
+  c->tx.file_fd = pipefd[0];
+  c->tx.file_off = 11;
+  c->tx.file_rem = 22;
+  c->tx.recv_armed = 1;
+
+  conn_recycle(c);
+  ASSERT_EQ(close(pipefd[0]), -1);
+  close(pipefd[1]);
+
+  struct conn *c2 = conn_alloc();
+  ASSERT_EQ(c2, c);
+  ASSERT_EQ(c2->tx.file_fd, -1);
+  ASSERT_EQ(c2->tx.recv_armed, 0);
+  free(c2);
+  PASS();
+}
+
 SUITE(s_freelist) {
   RUN_TEST(t_alloc_from_empty_returns_zeroed);
   RUN_TEST(t_recycle_then_alloc_reuses);
   RUN_TEST(t_drain_empties_freelist);
+  RUN_TEST(t_recycle_resets_tx_resources);
 }
 
 // ==================================================================
@@ -197,63 +226,6 @@ SUITE(s_refcount) {
 }
 
 // ==================================================================
-// Suite: tx_close_file
-// ==================================================================
-
-TEST t_tx_close_file_closes_fd(void) {
-  int pfd[2];
-  if (pipe(pfd) != 0) {
-    SKIPm("pipe() failed");
-  }
-  struct conn c;
-  memset(&c, 0, sizeof(c));
-  c.tx.file_fd = pfd[0];
-  c.tx.file_off = 100;
-  c.tx.file_rem = 200;
-  int closed_fd = c.tx.file_fd;
-
-  tx_close_file(&c);
-
-  ASSERT_EQ(c.tx.file_fd, -1);
-  ASSERT_EQ(c.tx.file_off, 0);
-  ASSERT_EQ((int)c.tx.file_rem, 0);
-
-  errno = 0;
-  ASSERT_EQ(fcntl(closed_fd, F_GETFD), -1);
-  ASSERT_EQ(errno, EBADF);
-
-  // Close the write end; this is just cleanup.
-  close(pfd[1]);
-  PASS();
-}
-
-TEST t_tx_close_file_noop_when_no_fd(void) {
-  struct conn c;
-  memset(&c, 0, sizeof(c));
-  c.tx.file_fd = -1;
-  c.tx.file_off = 10;
-  c.tx.file_rem = 20;
-
-  tx_close_file(&c);
-
-  ASSERT_EQ(c.tx.file_fd, -1);
-  ASSERT_EQ(c.tx.file_off, 0);
-  ASSERT_EQ((int)c.tx.file_rem, 0);
-  PASS();
-}
-
-TEST t_tx_close_file_null_safe(void) {
-  tx_close_file(NULL);   // must not crash
-  PASS();
-}
-
-SUITE(s_tx_close_file) {
-  RUN_TEST(t_tx_close_file_closes_fd);
-  RUN_TEST(t_tx_close_file_noop_when_no_fd);
-  RUN_TEST(t_tx_close_file_null_safe);
-}
-
-// ==================================================================
 // Suite: freelist log stats (smoke)
 // ==================================================================
 
@@ -278,7 +250,6 @@ int main(int argc, char **argv) {
   RUN_SUITE(s_active_conns);
   RUN_SUITE(s_freelist);
   RUN_SUITE(s_refcount);
-  RUN_SUITE(s_tx_close_file);
   RUN_SUITE(s_log_stats);
   GREATEST_MAIN_END();
 }

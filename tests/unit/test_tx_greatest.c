@@ -3,16 +3,24 @@
 #include "../vendor/greatest_color.h"
 #include "../vendor/greatest.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <string.h>
 #include <time.h>
 
 #include "include/conn.h"
 #include "include/tx.h"
 
-TEST t_after_full_response_431_draining_shutwr(void) {
+static struct tx_state_t tx_test_init(void) {
   struct tx_state_t tx;
-  memset(&tx, 0, sizeof(tx));
+  tx_init(&tx);
+  return tx;
+}
+
+TEST t_after_full_response_431_draining_shutwr(void) {
+  struct tx_state_t tx = tx_test_init();
   tx.resp_kind = RK_431;
   tx.keepalive = 0;
 
@@ -22,8 +30,7 @@ TEST t_after_full_response_431_draining_shutwr(void) {
 }
 
 TEST t_after_full_response_503_close(void) {
-  struct tx_state_t tx;
-  memset(&tx, 0, sizeof(tx));
+  struct tx_state_t tx = tx_test_init();
   tx.resp_kind = RK_503;
   tx.keepalive = 1;
 
@@ -33,8 +40,7 @@ TEST t_after_full_response_503_close(void) {
 }
 
 TEST t_after_full_response_keepalive_reset(void) {
-  struct tx_state_t tx;
-  memset(&tx, 0, sizeof(tx));
+  struct tx_state_t tx = tx_test_init();
   tx.resp_kind = RK_OK_KA;
   tx.keepalive = 1;
 
@@ -44,8 +50,7 @@ TEST t_after_full_response_keepalive_reset(void) {
 }
 
 TEST t_after_full_response_default_close(void) {
-  struct tx_state_t tx;
-  memset(&tx, 0, sizeof(tx));
+  struct tx_state_t tx = tx_test_init();
   tx.resp_kind = RK_OK_CLOSE;
   tx.keepalive = 0;
 
@@ -55,8 +60,7 @@ TEST t_after_full_response_default_close(void) {
 }
 
 TEST t_pending_headers_returns_remaining_slice(void) {
-  struct tx_state_t tx;
-  memset(&tx, 0, sizeof(tx));
+  struct tx_state_t tx = tx_test_init();
   tx.write_buf = "abcdef";
   tx.write_len = 6;
   tx.write_off = 2;
@@ -69,8 +73,7 @@ TEST t_pending_headers_returns_remaining_slice(void) {
 }
 
 TEST t_pending_headers_returns_zero_when_fully_sent(void) {
-  struct tx_state_t tx;
-  memset(&tx, 0, sizeof(tx));
+  struct tx_state_t tx = tx_test_init();
   tx.write_buf = "abc";
   tx.write_len = 3;
   tx.write_off = 3;
@@ -81,8 +84,7 @@ TEST t_pending_headers_returns_zero_when_fully_sent(void) {
 }
 
 TEST t_pollout_helpers_reflect_state(void) {
-  struct tx_state_t tx;
-  memset(&tx, 0, sizeof(tx));
+  struct tx_state_t tx = tx_test_init();
 
   ASSERT_EQ(tx_pollout_is_armed(&tx), 0);
   ASSERT_EQ(tx_should_arm_pollout(&tx), 1);
@@ -98,8 +100,7 @@ TEST t_pollout_helpers_reflect_state(void) {
 }
 
 TEST t_next_sendfile_chunk_caps_to_policy_max(void) {
-  struct tx_state_t tx;
-  memset(&tx, 0, sizeof(tx));
+  struct tx_state_t tx = tx_test_init();
 
   tx.file_rem = (size_t)(2u << 20);
   ASSERT_EQ((int)tx_next_sendfile_chunk(&tx), (int)(1u << 20));
@@ -122,6 +123,102 @@ TEST t_sendfile_step_mapping_matches_decisions(void) {
   PASS();
 }
 
+TEST t_attach_sendfile_replaces_existing_file(void) {
+  int old_pipe[2];
+  int new_pipe[2];
+  ASSERT_EQ(pipe(old_pipe), 0);
+  ASSERT_EQ(pipe(new_pipe), 0);
+
+  struct tx_state_t tx = tx_test_init();
+  tx.file_fd = old_pipe[0];
+
+  ASSERT_EQ(tx_attach_sendfile(&tx, new_pipe[0], 12, 34), 0);
+  ASSERT_EQ(tx.file_fd, new_pipe[0]);
+  ASSERT_EQ((int)tx.file_off, 12);
+  ASSERT_EQ((int)tx.file_rem, 34);
+  ASSERT_EQ(close(old_pipe[0]), -1);
+
+  close(old_pipe[1]);
+  close(new_pipe[1]);
+  tx_close_attached_file(&tx);
+  PASS();
+}
+
+TEST t_close_attached_file_clears_file_state(void) {
+  int pipefd[2];
+  ASSERT_EQ(pipe(pipefd), 0);
+
+  struct tx_state_t tx = tx_test_init();
+  tx.file_fd = pipefd[0];
+  tx.file_off = 7;
+  tx.file_rem = 9;
+
+  tx_close_attached_file(&tx);
+  ASSERT_EQ(tx.file_fd, -1);
+  ASSERT_EQ((int)tx.file_off, 0);
+  ASSERT_EQ((int)tx.file_rem, 0);
+  ASSERT_EQ(close(pipefd[0]), -1);
+
+  close(pipefd[1]);
+  PASS();
+}
+
+TEST t_reset_closes_attached_file(void) {
+  int pipefd[2];
+  ASSERT_EQ(pipe(pipefd), 0);
+
+  struct tx_state_t tx = tx_test_init();
+  tx.file_fd = pipefd[0];
+  tx.file_off = 7;
+  tx.file_rem = 9;
+
+  tx_reset(&tx);
+  ASSERT_EQ(tx.file_fd, -1);
+  ASSERT_EQ((int)tx.file_off, 0);
+  ASSERT_EQ((int)tx.file_rem, 0);
+  ASSERT_EQ(close(pipefd[0]), -1);
+
+  close(pipefd[1]);
+  PASS();
+}
+
+TEST t_reset_initialized_empty_tx_does_not_close_stdin(void) {
+  struct tx_state_t tx = tx_test_init();
+
+  errno = 0;
+  int before = fcntl(STDIN_FILENO, F_GETFD);
+  if (before < 0 && errno == EBADF) {
+    SKIPm("stdin already closed");
+  }
+
+  tx_reset(&tx);
+  ASSERT_EQ(tx.file_fd, -1);
+  errno = 0;
+  int rc = fcntl(STDIN_FILENO, F_GETFD);
+  ASSERT(rc >= 0 || errno != EBADF);
+  PASS();
+}
+
+TEST t_reset_clears_recv_armed(void) {
+  struct tx_state_t tx = tx_test_init();
+  tx.recv_armed = 1;
+
+  tx_reset(&tx);
+  ASSERT_EQ(tx.recv_armed, 0);
+  PASS();
+}
+
+#if ENABLE_ITEST_ECHO
+TEST t_reset_clears_itest_static_mode(void) {
+  struct tx_state_t tx = tx_test_init();
+  tx.itest_static_mode = "sendfile";
+
+  tx_reset(&tx);
+  ASSERT_EQ(tx.itest_static_mode, NULL);
+  PASS();
+}
+#endif
+
 SUITE(s_tx) {
   RUN_TEST(t_after_full_response_431_draining_shutwr);
   RUN_TEST(t_after_full_response_503_close);
@@ -132,6 +229,14 @@ SUITE(s_tx) {
   RUN_TEST(t_pollout_helpers_reflect_state);
   RUN_TEST(t_next_sendfile_chunk_caps_to_policy_max);
   RUN_TEST(t_sendfile_step_mapping_matches_decisions);
+  RUN_TEST(t_attach_sendfile_replaces_existing_file);
+  RUN_TEST(t_close_attached_file_clears_file_state);
+  RUN_TEST(t_reset_closes_attached_file);
+  RUN_TEST(t_reset_initialized_empty_tx_does_not_close_stdin);
+  RUN_TEST(t_reset_clears_recv_armed);
+#if ENABLE_ITEST_ECHO
+  RUN_TEST(t_reset_clears_itest_static_mode);
+#endif
 }
 
 // ---------------------------------------------------------------------------

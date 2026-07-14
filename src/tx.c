@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "conn.h"
 #include "time_utils.h"
@@ -105,10 +106,20 @@ static int tx_test_force_header_build_fail(const char *status_line) {
 }
 #endif
 
+void tx_init(struct tx_state_t *tx) {
+  if (!tx) {
+    return;
+  }
+  memset(tx, 0, sizeof(*tx));
+  tx->file_fd = -1;
+}
+
 void tx_reset(struct tx_state_t *tx) {
   if (!tx) {
     return;
   }
+
+  tx_close_attached_file(tx);
 
   if (tx->dyn_buf) {
     free(tx->dyn_buf);
@@ -125,9 +136,11 @@ void tx_reset(struct tx_state_t *tx) {
 
   tx->keepalive = 0;
   tx->drain_after_headers = 0;
+  tx->recv_armed = 0;
 
-  tx->file_rem = 0;
-  tx->file_off = 0;
+#if ENABLE_ITEST_ECHO
+  tx->itest_static_mode = NULL;
+#endif
 }
 
 enum tx_decision tx_begin_headers(struct tx_state_t *tx,
@@ -320,6 +333,30 @@ int tx_begin_sendfile(struct tx_state_t *tx, off_t offset, size_t length) {
     return -1;
   }
 
+  tx->file_rem = length;
+  tx->file_off = offset;
+  return 0;
+}
+
+void tx_close_attached_file(struct tx_state_t *tx) {
+  if (!tx) {
+    return;
+  }
+  if (tx->file_fd >= 0) {
+    close(tx->file_fd);
+    tx->file_fd = -1;
+  }
+  tx->file_off = 0;
+  tx->file_rem = 0;
+}
+
+int tx_attach_sendfile(struct tx_state_t *tx, int fd, off_t offset, size_t length) {
+  if (!tx || fd < 0 || length == 0) {
+    return -1;
+  }
+
+  tx_close_attached_file(tx);
+  tx->file_fd = fd;
   tx->file_rem = length;
   tx->file_off = offset;
   return 0;

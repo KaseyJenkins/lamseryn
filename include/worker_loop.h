@@ -9,6 +9,7 @@
 
 struct worker_ctx;
 struct op_ctx;
+struct tx_state_t;
 
 // Collect a CQE batch for the worker loop.
 // Returns 0 on success and fills `out_count` (>=1 if a CQE is available).
@@ -89,7 +90,7 @@ struct worker_loop_write_ops {
   void (*maybe_flush)(struct worker_ctx *w, int urgent);
   void (*arm_write_timeout)(struct worker_ctx *w, struct conn *c);
   void (*clear_write_timeout)(struct worker_ctx *w, struct conn *c);
-  void (*tx_close_file)(struct conn *c);
+  void (*tx_close_attached_file)(struct tx_state_t *tx);
   void (*emit_access_log)(struct worker_ctx *w, struct conn *c);
   void (*post_recv_ptr)(struct worker_ctx *w, struct conn *c);
   void (*conn_reset_request)(struct worker_ctx *w, struct conn *c);

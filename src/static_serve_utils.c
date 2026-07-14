@@ -955,14 +955,10 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
                                        keep,
                                        /*drain_after_headers=*/0,
                                        &out206);
-                if (c->tx.file_fd >= 0) {
-                  close(c->tx.file_fd);
-                  c->tx.file_fd = -1;
+                if (tx_attach_sendfile(&c->tx, fd, (off_t)rr.start, (size_t)rr.length) == 0) {
+                  fd = -1;
+                  return 1;
                 }
-                c->tx.file_fd = fd;
-                (void)tx_begin_sendfile(&c->tx, (off_t)rr.start, (size_t)rr.length);
-                fd = -1;
-                return 1;
               }
             }
             goto done;
@@ -1133,19 +1129,17 @@ int static_serve_try_prepare_docroot_response(struct conn *c,
 #endif
       if (static_serve_tx_set_dynamic_response_ex(c, "200 OK", ctype, fsz, NULL, 0, keep,
                                                    validator_hdrs) == 0) {
-        if (c->tx.file_fd >= 0) {
-          close(c->tx.file_fd);
-          c->tx.file_fd = -1;
-        }
         if (fsz > 0) {
-          c->tx.file_fd = fd;
-          (void)tx_begin_sendfile(&c->tx, 0, fsz);
-          fd = -1;
+          if (tx_attach_sendfile(&c->tx, fd, 0, fsz) == 0) {
+            fd = -1;
+            return 1;
+          }
+          goto done;
         } else {
           close(fd);
           fd = -1;
+          return 1;
         }
-        return 1;
       }
     }
   }

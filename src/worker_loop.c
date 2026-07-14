@@ -221,8 +221,8 @@ static void worker_loop_tx_sendfile_progress(struct worker_ctx *w,
   }
 
   if (c->tx.file_fd < 0 || c->tx.file_rem == 0) {
-    if (ops->tx_close_file) {
-      ops->tx_close_file(c);
+    if (ops->tx_close_attached_file) {
+      ops->tx_close_attached_file(&c->tx);
     }
     worker_loop_write_on_full_response(w, c, cfd, ops);
     return;
@@ -266,14 +266,14 @@ static void worker_loop_tx_sendfile_progress(struct worker_ctx *w,
       if (ops->schedule_or_sync_close) {
         ops->schedule_or_sync_close(w, cfd);
       }
-      if (ops->tx_close_file) {
-        ops->tx_close_file(c);
+      if (ops->tx_close_attached_file) {
+        ops->tx_close_attached_file(&c->tx);
       }
       return;
     }
 
-    if (ops->tx_close_file) {
-      ops->tx_close_file(c);
+    if (ops->tx_close_attached_file) {
+      ops->tx_close_attached_file(&c->tx);
     }
     if (worker_loop_cancel_write_poll_if_armed(w, c) && ops->maybe_flush) {
       ops->maybe_flush(w, 0);
@@ -297,8 +297,8 @@ static void worker_loop_tx_sendfile_progress(struct worker_ctx *w,
     return;
   }
 
-  if (ops->tx_close_file) {
-    ops->tx_close_file(c);
+  if (ops->tx_close_attached_file) {
+    ops->tx_close_attached_file(&c->tx);
   }
   if (worker_loop_cancel_write_poll_if_armed(w, c) && ops->maybe_flush) {
     ops->maybe_flush(w, 0);
@@ -1675,7 +1675,7 @@ struct worker_loop_write_ops worker_loop_build_write_ops(void) {
     .maybe_flush = maybe_flush,
     .arm_write_timeout = conn_arm_write_timeout,
     .clear_write_timeout = conn_clear_write_timeout,
-    .tx_close_file = tx_close_file,
+    .tx_close_attached_file = tx_close_attached_file,
     .emit_access_log = access_log_emit_from_conn,
     .post_recv_ptr = post_recv_ptr,
     .conn_reset_request = conn_reset_request,

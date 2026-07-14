@@ -8,11 +8,10 @@
 #include "macros.h"
 #include "types.h"
 #include "req_arena.h"
+#include "conn_deadline_state.h"
+#include "conn_link.h"
+#include "tx.h"
 #include <llhttp.h>
-
-#ifndef ENABLE_ITEST_ECHO
-#define ENABLE_ITEST_ECHO 0
-#endif
 
 #ifndef REQ_TARGET_MAX
 #define REQ_TARGET_MAX 2048
@@ -48,32 +47,6 @@ struct req_hdr_entry {
 
 enum {
   REQ_HDR_F_VALUE_TRUNCATED = 1u << 0,
-};
-
-// Per-connection deadline and timeout state.
-struct deadline_state {
-  uint64_t last_active_ms;
-  uint64_t header_start_ms;
-  uint64_t header_start_us;
-  uint64_t write_start_ms;
-  int ka_idle;
-  int closing;
-  int draining;
-  int abortive_close;
-  uint64_t drain_deadline_ms;
-
-  enum deadline_kind deadline_kind;
-  uint64_t deadline_ms;
-  int deadline_active;
-};
-
-// Per-connection worker linkage (active-set and timing wheel).
-struct worker_link {
-  int in_active_set;
-  int active_idx;
-  struct conn *tw_prev;
-  struct conn *tw_next;
-  uint32_t tw_slot;
 };
 
 // Per-connection HTTP/1 parser and header state.
@@ -167,33 +140,6 @@ struct http1_state {
   uint8_t expect_100_continue;
   uint8_t expect_unsupported;
   uint64_t cl_value;
-};
-
-// Per-connection transmit (TX) state for writes.
-struct tx_state_t {
-  size_t write_len;
-  size_t write_off;
-  size_t content_length_hint;
-  const char *write_buf;
-  void *dyn_buf;
-  enum resp_kind resp_kind;
-  int keepalive;
-  int drain_after_headers;
-  int write_poll_armed;
-  int recv_armed;
-
-  // Optional streaming file body state (static file serving).
-  // When file_fd >= 0 and file_rem > 0, we must send headers first (via write_buf)
-  // and then stream the file body using sendfile() on POLLOUT readiness.
-  int file_fd;
-  size_t file_rem;
-  off_t file_off;
-
-#if ENABLE_ITEST_ECHO
-  // Integration-test only: when non-NULL, tx_set_dynamic_response_ex() appends
-  // an X-Itest-Static-Mode header and then clears this field.
-  const char *itest_static_mode;
-#endif
 };
 
 // Connection state shared between translation units.

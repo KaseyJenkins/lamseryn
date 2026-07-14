@@ -240,7 +240,7 @@ $(TEST_BIN_CONFIG_INI): unit/test_config_ini_greatest.c ../src/config_ini.c ../s
 		-I vendor -o $@ $^
 
 $(TEST_BIN_TX): unit/test_tx_greatest.c ../src/tx.c | $(BUILD)
-	$(CC) $(CFLAGS) -I vendor -o $@ $^
+	$(CC) $(CFLAGS) -DENABLE_ITEST_ECHO=1 -I vendor -o $@ $^
 
 $(TEST_BIN_REQ_ARENA_CACHE): unit/test_req_arena_cache_greatest.c ../src/req_arena_stats.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^
@@ -248,7 +248,7 @@ $(TEST_BIN_REQ_ARENA_CACHE): unit/test_req_arena_cache_greatest.c ../src/req_are
 $(TEST_BIN_ACCESS_LOG): unit/test_access_log_greatest.c ../src/access_log.c ../src/logger.c | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS)
 
-$(TEST_BIN_CONN_LIFECYCLE): unit/test_conn_lifecycle_greatest.c ../src/conn_lifecycle.c ../src/conn_store.c ../src/req_arena_stats.c ../src/logger.c $(LIBURING_DEPS) | $(BUILD)
+$(TEST_BIN_CONN_LIFECYCLE): unit/test_conn_lifecycle_greatest.c ../src/conn_lifecycle.c ../src/conn_store.c ../src/req_arena_stats.c ../src/logger.c ../src/tx.c $(LIBURING_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -I vendor -o $@ $^ $(LDFLAGS) $(LDLIBS) $(LIBURING_LIBS)
 
 $(TEST_BIN_STATIC_304): unit/test_static_serve_304_greatest.c ../src/compression.c $(ZLIB_DEPS) $(BROTLI_DEPS) | $(BUILD)
