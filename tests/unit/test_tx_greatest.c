@@ -99,6 +99,19 @@ TEST t_pollout_helpers_reflect_state(void) {
   PASS();
 }
 
+TEST t_recv_helpers_reflect_state(void) {
+  struct tx_state_t tx = tx_test_init();
+
+  ASSERT_EQ(tx_recv_is_armed(&tx), 0);
+
+  tx_recv_mark_armed(&tx);
+  ASSERT_EQ(tx_recv_is_armed(&tx), 1);
+
+  tx_recv_mark_disarmed(&tx);
+  ASSERT_EQ(tx_recv_is_armed(&tx), 0);
+  PASS();
+}
+
 TEST t_next_sendfile_chunk_caps_to_policy_max(void) {
   struct tx_state_t tx = tx_test_init();
 
@@ -110,6 +123,20 @@ TEST t_next_sendfile_chunk_caps_to_policy_max(void) {
 
   tx.file_rem = 0;
   ASSERT_EQ((int)tx_next_sendfile_chunk(&tx), 0);
+  PASS();
+}
+
+TEST t_sendfile_active_helper_reflects_state(void) {
+  struct tx_state_t tx = tx_test_init();
+
+  ASSERT_EQ(tx_sendfile_is_active(&tx), 0);
+
+  tx.file_fd = 5;
+  tx.file_rem = 10;
+  ASSERT_EQ(tx_sendfile_is_active(&tx), 1);
+
+  tx.file_rem = 0;
+  ASSERT_EQ(tx_sendfile_is_active(&tx), 0);
   PASS();
 }
 
@@ -227,7 +254,9 @@ SUITE(s_tx) {
   RUN_TEST(t_pending_headers_returns_remaining_slice);
   RUN_TEST(t_pending_headers_returns_zero_when_fully_sent);
   RUN_TEST(t_pollout_helpers_reflect_state);
+  RUN_TEST(t_recv_helpers_reflect_state);
   RUN_TEST(t_next_sendfile_chunk_caps_to_policy_max);
+  RUN_TEST(t_sendfile_active_helper_reflects_state);
   RUN_TEST(t_sendfile_step_mapping_matches_decisions);
   RUN_TEST(t_attach_sendfile_replaces_existing_file);
   RUN_TEST(t_close_attached_file_clears_file_state);

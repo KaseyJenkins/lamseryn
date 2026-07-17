@@ -118,9 +118,17 @@ enum tx_decision tx_on_pollout(struct tx_state_t *tx, struct tx_next_io *out);
 void tx_notify_poll_armed(struct tx_state_t *tx);
 void tx_notify_poll_disarmed_staged(struct tx_state_t *tx);
 
+// Recv arming state helpers.
+int tx_recv_is_armed(const struct tx_state_t *tx);
+void tx_recv_mark_armed(struct tx_state_t *tx);
+void tx_recv_mark_disarmed(struct tx_state_t *tx);
+
 // Pollout arming state helpers.
 int tx_pollout_is_armed(const struct tx_state_t *tx);
 int tx_should_arm_pollout(const struct tx_state_t *tx);
+
+// Return non-zero when a sendfile body is attached and still has bytes left.
+int tx_sendfile_is_active(const struct tx_state_t *tx);
 
 void tx_discard(struct tx_state_t *tx);
 

@@ -126,7 +126,7 @@ static void worker_loop_write_on_full_response(struct worker_ctx *w,
       ops->clear_write_timeout(w, c);
     }
     shutdown(cfd, SHUT_WR);
-    if (!c->tx.recv_armed && ops->post_recv_ptr) {
+    if (!tx_recv_is_armed(&c->tx) && ops->post_recv_ptr) {
       ops->post_recv_ptr(w, c);
     }
     return;
@@ -145,7 +145,7 @@ static void worker_loop_write_on_full_response(struct worker_ctx *w,
     }
 
     if (!staged) {
-      if (!c->tx.recv_armed && ops->post_recv_ptr) {
+      if (!tx_recv_is_armed(&c->tx) && ops->post_recv_ptr) {
         ops->post_recv_ptr(w, c);
       }
       if (ops->tw_reschedule) {
@@ -220,7 +220,7 @@ static void worker_loop_tx_sendfile_progress(struct worker_ctx *w,
     return;
   }
 
-  if (c->tx.file_fd < 0 || c->tx.file_rem == 0) {
+  if (!tx_sendfile_is_active(&c->tx)) {
     if (ops->tx_close_attached_file) {
       ops->tx_close_attached_file(&c->tx);
     }
@@ -228,7 +228,7 @@ static void worker_loop_tx_sendfile_progress(struct worker_ctx *w,
     return;
   }
 
-  while (c->tx.file_rem > 0) {
+  while (tx_sendfile_is_active(&c->tx)) {
     size_t want = tx_next_sendfile_chunk(&c->tx);
     if (want == 0) {
       break;
@@ -287,7 +287,7 @@ static void worker_loop_tx_sendfile_progress(struct worker_ctx *w,
         ops->clear_write_timeout(w, c);
       }
       shutdown(cfd, SHUT_WR);
-      if (!c->tx.recv_armed && ops->post_recv_ptr) {
+      if (!tx_recv_is_armed(&c->tx) && ops->post_recv_ptr) {
         ops->post_recv_ptr(w, c);
       }
       return;
@@ -577,7 +577,7 @@ void worker_loop_read_handle_cqe(struct worker_ctx *w,
   char *buf_ptr = rxb.buf_ptr;
 
   if (c) {
-    c->tx.recv_armed = 0;
+    tx_recv_mark_disarmed(&c->tx);
   }
 
   if (!c || cfd < 0 || c->dl.closing) {
@@ -860,7 +860,7 @@ void worker_loop_write_handle_cqe(struct worker_ctx *w,
       ops->clear_write_timeout(w, c);
     }
     shutdown(cfd, SHUT_WR);
-    if (!c->tx.recv_armed && ops->post_recv_ptr) {
+    if (!tx_recv_is_armed(&c->tx) && ops->post_recv_ptr) {
       ops->post_recv_ptr(w, c);
     }
     return;
@@ -1091,7 +1091,7 @@ int worker_loop_tls_try_send_pending(struct worker_ctx *w,
       }
       return -1;
     }
-    if (want_read && !c->tx.recv_armed && ops->is_closing_no_deadline
+    if (want_read && !tx_recv_is_armed(&c->tx) && ops->is_closing_no_deadline
         && !ops->is_closing_no_deadline(c) && ops->post_recv_ptr) {
       ops->post_recv_ptr(w, c);
     }
@@ -1114,7 +1114,7 @@ void worker_loop_tls_read_handle_cqe(struct worker_ctx *w,
     return;
   }
 
-  c->tx.recv_armed = 0;
+  tx_recv_mark_disarmed(&c->tx);
 
   int spins = 0;
   while (!c->dl.closing && spins < 8) {
@@ -1144,7 +1144,7 @@ void worker_loop_tls_read_handle_cqe(struct worker_ctx *w,
         }
         break;
       }
-      if (want_read && !c->tx.recv_armed && tls_ops->is_closing_no_deadline
+      if (want_read && !tx_recv_is_armed(&c->tx) && tls_ops->is_closing_no_deadline
           && !tls_ops->is_closing_no_deadline(c) && tls_ops->post_recv_ptr) {
         tls_ops->post_recv_ptr(w, c);
       }
@@ -1157,7 +1157,7 @@ void worker_loop_tls_read_handle_cqe(struct worker_ctx *w,
     break;
   }
 
-  if (!c->dl.closing && !c->tx.recv_armed && tls_ops->is_closing_no_deadline
+  if (!c->dl.closing && !tx_recv_is_armed(&c->tx) && tls_ops->is_closing_no_deadline
       && !tls_ops->is_closing_no_deadline(c) && tls_ops->post_recv_ptr) {
     tls_ops->post_recv_ptr(w, c);
   }
@@ -1202,7 +1202,7 @@ int worker_loop_tls_handshake_progress(struct worker_ctx *w,
     c->tls_handshake_done = 1;
     c->tls_want_read = 0;
     c->tls_want_write = 0;
-    if (!c->tx.recv_armed && ops->is_closing_no_deadline && !ops->is_closing_no_deadline(c)
+    if (!tx_recv_is_armed(&c->tx) && ops->is_closing_no_deadline && !ops->is_closing_no_deadline(c)
         && ops->post_recv_ptr) {
       ops->post_recv_ptr(w, c);
     }
@@ -1215,7 +1215,7 @@ int worker_loop_tls_handshake_progress(struct worker_ctx *w,
   if (hs == TLS_HS_WANT_READ) {
     c->tls_want_read = 1;
     c->tls_want_write = 0;
-    if (!c->tx.recv_armed && ops->is_closing_no_deadline && !ops->is_closing_no_deadline(c)
+    if (!tx_recv_is_armed(&c->tx) && ops->is_closing_no_deadline && !ops->is_closing_no_deadline(c)
         && ops->post_recv_ptr) {
       ops->post_recv_ptr(w, c);
     }
@@ -1267,7 +1267,7 @@ void post_recv_ptr(struct worker_ctx *w, struct conn *c) {
   if (conn_is_closing_no_deadline(c)) {
     return;
   }
-  if (c->tx.recv_armed) {
+  if (tx_recv_is_armed(&c->tx)) {
     return;
   }
 

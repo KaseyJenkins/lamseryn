@@ -465,12 +465,32 @@ void tx_notify_poll_disarmed_staged(struct tx_state_t *tx) {
   }
 }
 
+int tx_recv_is_armed(const struct tx_state_t *tx) {
+  return (tx && tx->recv_armed) ? 1 : 0;
+}
+
+void tx_recv_mark_armed(struct tx_state_t *tx) {
+  if (tx) {
+    tx->recv_armed = 1;
+  }
+}
+
+void tx_recv_mark_disarmed(struct tx_state_t *tx) {
+  if (tx) {
+    tx->recv_armed = 0;
+  }
+}
+
 int tx_pollout_is_armed(const struct tx_state_t *tx) {
   return (tx && tx->write_poll_armed) ? 1 : 0;
 }
 
 int tx_should_arm_pollout(const struct tx_state_t *tx) {
   return (tx && !tx->write_poll_armed) ? 1 : 0;
+}
+
+int tx_sendfile_is_active(const struct tx_state_t *tx) {
+  return (tx && tx->file_fd >= 0 && tx->file_rem > 0) ? 1 : 0;
 }
 
 void tx_discard(struct tx_state_t *tx) {

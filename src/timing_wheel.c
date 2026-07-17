@@ -35,7 +35,7 @@ static inline int tw_conn_is_write_in_progress(const struct conn *c) {
   if (c->tx.write_buf && c->tx.write_len > c->tx.write_off) {
     return 1;
   }
-  if (c->tx.file_fd >= 0 && c->tx.file_rem > 0) {
+  if (tx_sendfile_is_active(&c->tx)) {
     return 1;
   }
   return 0;
